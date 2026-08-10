@@ -1,0 +1,13 @@
+numpy>=1.24
+scipy>=1.10
+astropy>=5.3
+scikit-image>=0.21
+opencv-python>=4.8
+astroalign>=2.4
+rawpy>=0.18
+imageio>=2.31
+tifffile>=2023.7.10
+Pillow>=10.0
+
+# dev / testing
+pytest>=7.4

@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+
+# Personal Claude Code session config, not project config.
+
+# Raw astro data and full-resolution outputs are large personal binaries --
+# kept local, not in the repo. cocoon_result.tiff exceeds GitHub's 100MB
+# per-file limit anyway. The downscaled preview PNG is small and IS tracked.
+COCOON NEBULA*/
+COCOON NEBULA*.zip
+cocoon_result.tiff
+*.CR2
+*.fits
+*.fit
