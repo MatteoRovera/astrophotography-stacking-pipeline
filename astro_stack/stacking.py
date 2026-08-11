@@ -17,10 +17,12 @@ STACK_METHODS = ("mean", "median", "sigma")
 
 
 def stack_mean(data: np.ndarray) -> np.ndarray:
+    """average frames along axis 0. optimal snr for gaussian noise."""
     return data.mean(axis=0).astype(np.float32)
 
 
 def stack_median(data: np.ndarray) -> np.ndarray:
+    """median combine frames along axis 0. immune to outliers."""
     return np.median(data, axis=0).astype(np.float32)
 
 
