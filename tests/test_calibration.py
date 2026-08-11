@@ -7,6 +7,7 @@ from astro_stack.loader import Frame
 
 
 def test_calibration_removes_known_dark_offset():
+    """a light minus a matching dark should leave just the signal."""
     rng = np.random.default_rng(0)
     signal = rng.uniform(0.05, 0.5, size=(24, 24)).astype(np.float32)
     dark_offset = np.full((24, 24), 0.07, dtype=np.float32)
@@ -26,6 +27,7 @@ def test_calibration_removes_known_dark_offset():
 
 
 def test_calibration_skipped_cleanly_when_no_cal_frames():
+    """no dark/flat/bias frames means lights pass through untouched."""
     rng = np.random.default_rng(1)
     signal = rng.uniform(0.05, 0.5, size=(16, 16)).astype(np.float32)
     light = Frame(data=signal.copy(), path=Path("IMG_0001.jpg"), frame_type="light")
@@ -38,6 +40,7 @@ def test_calibration_skipped_cleanly_when_no_cal_frames():
 
 
 def test_calibration_applies_flat_field_correction():
+    """dividing by a normalized flat should cancel out a vignetting pattern."""
     rng = np.random.default_rng(2)
     signal = rng.uniform(0.2, 0.4, size=(20, 20)).astype(np.float32)
 
