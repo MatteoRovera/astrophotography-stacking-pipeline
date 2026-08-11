@@ -1,32 +1,6 @@
-"""Build master calibration frames and apply them to light frames.
-
-The three corrections mirror the three defects each calibration frame type
-isolates (see loader.py docstring):
-
-    calibrated = (light - master_dark) / normalized_master_flat
-
-- Subtracting the master DARK removes the additive thermal/read-noise
-  pattern baked into every pixel at that exposure time.
-- Dividing by the normalized master FLAT removes multiplicative optical
-  defects (vignetting, dust shadows) without changing overall brightness,
-  because the flat is normalized to a mean of 1 before it's used.
-- BIAS is not subtracted from the light directly when a matching dark is
-  available -- the dark already contains that same read-noise offset (a
-  dark exposure is "bias + thermal noise"), so subtracting bias too would
-  remove it twice. Instead bias is used to clean up the flat (a flat's
-  own bias offset would otherwise skew the normalization), or as a
-  fallback stand-in for dark subtraction when no matching dark exists
-  (this only removes the fixed offset, not thermal buildup, so it's an
-  approximation -- fine for short exposures, less accurate for long ones).
-
-Master frames are built with a per-pixel MEDIAN across the set, not a mean.
-A median rejects one-off outliers (cosmic ray hits, hot pixels that spiked
-in a single sub-frame) that a mean would blend into the result.
-
-If no dark/flat/bias frames are present, calibration is skipped entirely and
-the light frames pass through untouched -- this is what makes the pipeline
-work on phone photos with no calibration set.
-"""
+"""build master dark/flat/bias frames and calibrate lights against them.
+calibrated = (light - master_dark) / normalized_master_flat. see readme
+for the reasoning. skipped entirely if no cal frames exist."""
 
 from __future__ import annotations
 
@@ -41,7 +15,7 @@ logger = logging.getLogger("astro_stack.calibration")
 
 
 def _stack_matching_shape(frames: list[Frame], label: str) -> np.ndarray:
-    """Stack frames of identical shape into (N, H, W[, C]); drop mismatches."""
+    """stack frames of identical shape, dropping mismatches."""
     ref_shape = frames[0].data.shape
     good = [f for f in frames if f.data.shape == ref_shape]
     if len(good) < len(frames):
@@ -77,15 +51,11 @@ def build_master_dark(dark_frames: list[Frame]) -> Optional[np.ndarray]:
 def normalize_flat(
     combined: np.ndarray, master_bias: Optional[np.ndarray] = None
 ) -> Optional[np.ndarray]:
-    """Bias-correct (if possible) and normalize a combined flat to mean=1.
-
-    Split out of build_master_flat() so the streaming pipeline can reuse the
-    exact same normalization on a flat it combined via chunked processing.
-    """
+    """bias-correct and normalize a combined flat to mean=1. split out so
+    streaming.py can reuse it."""
     if master_bias is not None and master_bias.shape == combined.shape:
         combined = combined - master_bias
-    # Normalize to a mean of 1 so dividing by the flat corrects *relative*
-    # brightness (vignetting/dust) without darkening or brightening the image.
+    # normalize to mean=1 so dividing corrects relative brightness only
     mean_val = float(np.mean(combined))
     if mean_val <= 0:
         logger.warning("Master flat has non-positive mean; skipping flat correction")
@@ -119,7 +89,7 @@ def calibrate_light(
         data -= master_bias
 
     if master_flat is not None and master_flat.shape == data.shape:
-        # Guard against divide-by-near-zero at dead/vignetted pixel edges.
+        # avoid divide-by-near-zero at dead/vignetted pixels
         safe_flat = np.clip(master_flat, 1e-3, None)
         data /= safe_flat
 
@@ -133,7 +103,7 @@ def calibrate_light(
 
 
 def calibrate_lights(buckets: dict[str, list[Frame]]) -> list[Frame]:
-    """Calibrate all light frames, skipping cleanly if no cal frames exist."""
+    """calibrate all light frames, skipping cleanly if no cal frames exist."""
     lights = buckets.get("light", [])
     darks = buckets.get("dark", [])
     flats = buckets.get("flat", [])

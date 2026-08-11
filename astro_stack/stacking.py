@@ -1,34 +1,5 @@
-"""Combine aligned frames into one image, and quantify the noise reduction.
-
-Why stacking reduces noise at all: assume each pixel's noise (photon shot
-noise + sensor read noise) is independent from frame to frame. Averaging N
-frames makes the *signal* add linearly (N x), while independent noise adds
-in quadrature (sqrt(N) x). The ratio signal/noise therefore improves by
-sqrt(N) -- this is the entire reason deep-sky imaging stacks dozens of
-sub-exposures instead of taking one long one.
-
-Three combine methods, in order of when to reach for them:
-
-- MEAN: the statistically optimal estimator for independent Gaussian noise
-  -- it gets the full sqrt(N) improvement. Its weakness is that it has no
-  concept of "this pixel is wrong": a satellite trail, plane, or cosmic ray
-  hit in even one frame gets divided by N and blended into every pixel it
-  touched, leaving a faint but real streak in the result.
-- MEDIAN: the middle value at each pixel is immune to a minority of frames
-  being contaminated (as long as fewer than half the frames are bad at that
-  pixel, outliers vanish completely). The cost is statistical efficiency --
-  for large N, the median's noise is about 1.25x the mean's (a well known
-  result for Gaussian statistics), so it needs ~1.57x as many frames to
-  match the mean's noise reduction.
-- SIGMA-CLIPPED MEAN: the practical default, and what tools like
-  DeepSkyStacker/PixInsight use. Per pixel, compute the mean and std across
-  the stack, mask any value more than `sigma` std devs away, then average
-  what's left. This rejects outliers like the median does, but because it
-  only throws away the actual bad pixels (not smooshing everything to the
-  middle value), it keeps noise performance close to the plain mean. It
-  needs enough frames (rule of thumb: 5+) for the per-pixel statistics to
-  be meaningful.
-"""
+"""combine aligned frames into one image and measure the noise reduction.
+mean, median, or sigma-clipped mean. see readme for when to use each."""
 
 from __future__ import annotations
 
@@ -61,9 +32,7 @@ def stack_sigma_clip(data: np.ndarray, sigma: float = 3.0, maxiters: int = 5) ->
 
     mask = np.ma.getmaskarray(combined)
     if mask.any():
-        # A pixel where every frame got clipped away (all N values were
-        # flagged as outliers of each other -- rare, but possible with very
-        # few frames). Fall back to the plain mean there instead of NaN.
+        # rare: every frame clipped away at this pixel. fall back to plain mean.
         fallback = data.mean(axis=0)
         combined = np.where(mask, fallback, np.ma.filled(combined, 0.0))
     else:
@@ -99,15 +68,8 @@ class NoiseStats:
 
 
 def measure_noise_snr(image: np.ndarray) -> NoiseStats:
-    """Estimate background noise and SNR of a single image.
-
-    Background level/noise use sigma-clipped statistics over the *whole*
-    image: stars and the target are a small minority of pixels, so an
-    iterative sigma-clip converges on the sky background's mean/median and
-    std without needing a hand-picked empty patch. "Signal" is taken as the
-    99.9th-percentile brightness above that background (a robust stand-in
-    for the target's peak, without letting a single hot pixel dominate).
-    """
+    """estimate background noise and snr with sigma-clipped stats, no
+    hand-picked empty patch needed."""
     from astropy.stats import sigma_clipped_stats
 
     gray = to_luminance(image)
@@ -120,7 +82,7 @@ def measure_noise_snr(image: np.ndarray) -> NoiseStats:
 
 
 def compare_before_after(single_frame: np.ndarray, stacked: np.ndarray, n_frames: int) -> dict:
-    """Report noise/SNR for one raw frame vs. the final stack, plus theory."""
+    """noise/snr for one raw frame vs the final stack, plus the theoretical prediction."""
     before = measure_noise_snr(single_frame)
     after = measure_noise_snr(stacked)
     observed_noise_ratio = before.noise_std / after.noise_std if after.noise_std > 0 else float("inf")

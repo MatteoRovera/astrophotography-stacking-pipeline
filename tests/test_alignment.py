@@ -9,8 +9,7 @@ from astro_stack.loader import Frame
 
 
 def _synthetic_star_field(size=200, n_stars=40, seed=0) -> np.ndarray:
-    """A background-noise field with several Gaussian 'stars' -- enough
-    point sources for astroalign to form triangles from."""
+    """a noise field with gaussian 'stars', enough for astroalign to use."""
     rng = np.random.default_rng(seed)
     field = rng.normal(0.02, 0.005, size=(size, size)).astype(np.float32)
 
@@ -39,8 +38,7 @@ def test_alignment_recovers_known_injected_shift():
     assert infos[1].success
     assert infos[1].method in ("astroalign", "phase_correlation")
 
-    # After alignment, the residual shift between the aligned frame and the
-    # reference should be close to zero -- i.e. the injected shift was undone.
+    # residual shift vs reference should be near zero if alignment worked
     residual_shift, _error, _phase = phase_cross_correlation(
         reference, aligned[1].data, upsample_factor=10
     )
@@ -48,13 +46,9 @@ def test_alignment_recovers_known_injected_shift():
 
 
 def test_alignment_falls_back_to_phase_correlation_for_sparse_frame():
-    """A single bright disk (like a Moon shot) has too few point sources for
-    astroalign's triangle matching, so this should hit the phase-correlation
-    fallback -- and still recover the shift correctly. The disk needs a
-    sharp edge (like the Moon's limb) rather than a smooth Gaussian glow:
-    phase correlation locates a shift from high-frequency content, and a
-    perfectly smooth blob doesn't have enough of it to pin down a precise
-    peak."""
+    """a single bright disk, like a moon shot, is too sparse for astroalign
+    and should fall back to phase correlation. needs a sharp edge, not a
+    smooth glow, since phase correlation needs high-frequency content."""
     size = 100
     rng = np.random.default_rng(0)
     yy, xx = np.mgrid[0:size, 0:size]

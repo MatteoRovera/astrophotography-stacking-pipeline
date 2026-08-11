@@ -1,38 +1,9 @@
-"""Memory-bounded version of the pipeline, for datasets too big to hold in RAM.
+"""memory-bounded version of the pipeline, for datasets too big for ram.
 
-The rest of this package (loader.py's ``load_folder``, calibration.py,
-alignment.py, stacking.py as called by ``pipeline._run_in_memory_pipeline``)
-takes the simple approach: decode every file into a normal in-RAM numpy
-array and keep all of them around at once. That's easy to reason about and
-is what the unit tests exercise directly, but it doesn't scale -- N frames
-at H x W x C x 4 bytes (float32) each means N x H x W x C x 4 bytes of RAM
-simultaneously. A session of 80 full-resolution DSLR frames can need tens
-of gigabytes that way, far more than a typical machine has free.
-
-This module does the same calibrate -> align -> stack work, but:
-
-1. Decodes one source file at a time (reusing loader.load_frame, the exact
-   same decoders), immediately writes the result to a temporary
-   memory-mapped file on disk, and drops the in-RAM copy. Peak RAM for
-   *loading* is therefore one frame, not N.
-2. Any operation that genuinely needs to see all N frames at a pixel (the
-   masters' median-combine, and the final stack) is done in horizontal row
-   chunks: read a chunk of rows from every frame's memmap (cheap, only
-   touches that slice), combine just that chunk with the *same*
-   stack_mean/stack_median/stack_sigma_clip functions used everywhere else
-   in the package, write the chunk to an output memmap, move to the next
-   chunk. Peak RAM for combining is then N x chunk_rows x W x C x 4 bytes,
-   which is tuned to a fixed memory budget regardless of image size or N.
-3. Calibration and alignment, which only ever look at one frame plus the
-   already-tiny master arrays, are done in the same single pass as decoding
-   -- so a light frame's temp file already holds the calibrated, aligned
-   result, and intermediate per-frame temp files are deleted as soon as
-   they're no longer needed rather than piling up for the whole run.
-
-Everything here is orchestration around code that already exists elsewhere
-(calibrate_light, align_single, stack_mean/median/sigma_clip) -- the actual
-calibration/alignment/stacking math is not duplicated.
-"""
+decodes one file at a time to a temp memmap file on disk, then combines
+masters/stacks in row chunks sized to a fixed memory budget. reuses the
+same calibrate_light/align_single/stack_* functions as the in-memory
+path, just orchestrated differently. see readme for the full writeup."""
 
 from __future__ import annotations
 
@@ -56,25 +27,16 @@ DEFAULT_MEMORY_BUDGET_MB = 512
 def estimate_chunk_rows(
     n_frames: int, width: int, channels: int, budget_bytes: int, safety_factor: float = 4.0
 ) -> int:
-    """How many rows can be combined at once and stay under ``budget_bytes``.
-
-    ``safety_factor`` gives headroom for the temporary arrays sigma-clipping
-    allocates internally (mask, clipped copy, ...) on top of the raw chunk.
-    """
+    """how many rows can be combined at once and stay under budget_bytes.
+    safety_factor leaves headroom for sigma-clip's internal temp arrays."""
     per_row_bytes = max(1, n_frames * width * max(channels, 1) * 4)
     rows = int(budget_bytes / (per_row_bytes * safety_factor))
     return max(1, rows)
 
 
 def _close_memmap(mm) -> None:
-    """Explicitly release the OS file handle behind a memmap.
-
-    On Windows, relying on ``del`` + refcounting to close a memmap's
-    underlying file handle is not reliable enough to then immediately
-    unlink() that same file -- the delete can fail with a PermissionError
-    because the mapping is still technically open. Closing the private
-    ``_mmap`` object directly is the standard workaround.
-    """
+    """release the os file handle behind a memmap. needed on windows, where
+    del alone won't let you unlink the file right after."""
     underlying = getattr(mm, "_mmap", None)
     if underlying is not None:
         try:
@@ -84,7 +46,7 @@ def _close_memmap(mm) -> None:
 
 
 def _write_array_to_disk(array: np.ndarray, path: Path) -> None:
-    """Write ``array`` to a new memmap file at ``path`` and fully close it."""
+    """write array to a new memmap file and fully close it."""
     mm = np.memmap(path, mode="w+", dtype=np.float32, shape=array.shape)
     mm[:] = array
     mm.flush()
@@ -112,7 +74,7 @@ def chunked_combine(
     out: np.memmap,
     chunk_rows: int,
 ) -> None:
-    """Combine ``sources`` along axis 0 into ``out``, one row-band at a time."""
+    """combine sources along axis 0 into out, one row-band at a time."""
     height = out.shape[0]
     for r0 in range(0, height, chunk_rows):
         r1 = min(r0 + chunk_rows, height)
@@ -124,7 +86,7 @@ def chunked_combine(
 def _build_master_streaming(
     paths: list[Path], label: str, tmp_dir: Path, budget_bytes: int
 ) -> Optional[np.ndarray]:
-    """Median-combine a bucket of calibration frames without holding them all in RAM."""
+    """median-combine a bucket of calibration frames without holding them all in ram."""
     if not paths:
         return None
 

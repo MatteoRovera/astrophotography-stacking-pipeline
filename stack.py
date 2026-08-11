@@ -1,9 +1,6 @@
 #!/usr/bin/env python
-"""CLI for the astrophotography stacking pipeline.
-
-Example:
-    python stack.py --input ./my_photos --output result.tiff --stack sigma
-"""
+"""cli for the astrophotography stacking pipeline.
+example: python stack.py --input ./my_photos --output result.tiff --stack sigma"""
 
 from __future__ import annotations
 

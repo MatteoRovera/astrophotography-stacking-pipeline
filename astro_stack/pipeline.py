@@ -1,20 +1,5 @@
-"""Wire loading -> calibration -> alignment -> stacking -> post-processing together.
-
-Two implementations do this work:
-
-- The in-memory path (``_run_in_memory_pipeline``) decodes every file up
-  front and keeps it all in RAM. Simple, and fast for typical phone-photo
-  or modest-sized sessions.
-- The streaming path (``streaming.run_streaming_pipeline``) processes one
-  file at a time through temporary memory-mapped disk files, for sessions
-  too large to fit in RAM (see streaming.py's module docstring).
-
-``run_pipeline`` picks between them automatically: it cheaply estimates the
-decoded size of everything in the input folder (no full decoding needed --
-see loader.estimate_decoded_bytes) and compares it against
-``memory_budget_mb``. Pass ``memory_budget_mb=0`` to force streaming mode
-always.
-"""
+"""wires loading, calibration, alignment, stacking, and post-processing
+together. picks in-memory or streaming mode based on estimated size."""
 
 from __future__ import annotations
 
@@ -30,7 +15,7 @@ from .streaming import DEFAULT_MEMORY_BUDGET_MB, run_streaming_pipeline
 
 logger = logging.getLogger("astro_stack.pipeline")
 
-# Sessions estimated to need more RAM than this switch to the streaming path.
+# sessions estimated to need more ram than this switch to streaming mode
 DEFAULT_IN_MEMORY_BUDGET_MB = 3072
 
 

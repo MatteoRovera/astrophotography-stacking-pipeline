@@ -1,33 +1,7 @@
-"""Align (register) light frames to a common reference frame.
-
-Between exposures, the target drifts across the sensor -- tracking error,
-polar-alignment drift, or just a handheld phone moving slightly. Stacking
-misaligned frames blurs everything instead of reinforcing it, so every frame
-must be resampled onto the same pixel grid as a chosen reference frame
-before stacking.
-
-Two methods are used, chosen automatically per-frame:
-
-1. astroalign (primary). Detects star-like point sources, forms triangles
-   from triplets of them, and matches triangles between the source and
-   reference image by their shape (side-length ratios), which stays the
-   same regardless of rotation, scale or translation. Matched triangles
-   give point correspondences, from which a similarity transform (rotation
-   + scale + translation) is solved. This is robust and handles field
-   rotation, but it needs a handful of well-detected stars -- it has
-   nothing to work with on a sparse frame (a few stars, or a single bright
-   disk like the Moon).
-
-2. Phase correlation (fallback). Computes the pixel shift between two
-   images from the phase of their FFT cross-power spectrum -- no point
-   detection required. It only recovers a pure translation (no rotation),
-   but that's exactly what's needed for a short, sparse, or single-object
-   sequence (e.g. handheld Moon shots) where astroalign has too few stars
-   to form triangles from.
-
-astroalign is tried first; if it raises (too few matched stars) or isn't
-installed, the frame falls back to phase correlation automatically.
-"""
+"""align light frames to a common reference frame.
+tries astroalign (star triangle matching) first, falls back to phase
+correlation (fft shift, translation only) if there aren't enough stars.
+see readme for the full tradeoff writeup."""
 
 from __future__ import annotations
 
@@ -53,7 +27,7 @@ class AlignmentInfo:
 
 
 def to_luminance(data: np.ndarray) -> np.ndarray:
-    """Collapse a color frame to a single 2D array for star/feature detection."""
+    """collapse a color frame to grayscale for star detection."""
     if data.ndim == 2:
         return data.astype(np.float32)
     channels = data.shape[-1]
@@ -79,7 +53,7 @@ def _phase_correlation_shift(ref_gray: np.ndarray, src_gray: np.ndarray) -> np.n
     from skimage.registration import phase_cross_correlation
 
     shift, _error, _diffphase = phase_cross_correlation(ref_gray, src_gray, upsample_factor=10)
-    return shift  # (dy, dx), sub-pixel
+    return shift  # (dy, dx), sub-pixel accurate
 
 
 def _shift_image(data: np.ndarray, shift: np.ndarray) -> np.ndarray:
@@ -90,7 +64,7 @@ def _shift_image(data: np.ndarray, shift: np.ndarray) -> np.ndarray:
 
 
 def check_astroalign_available() -> bool:
-    """Import-check astroalign once; log the fallback-everywhere case clearly."""
+    """check once whether astroalign is installed."""
     try:
         import astroalign  # noqa: F401
         return True
@@ -105,12 +79,8 @@ def check_astroalign_available() -> bool:
 def align_single(
     frame: Frame, ref_gray: np.ndarray, have_astroalign: bool
 ) -> tuple[Optional[np.ndarray], AlignmentInfo]:
-    """Align one frame onto a reference luminance image (astroalign, else phase correlation).
-
-    Factored out of align_frames() so the memory-bounded streaming pipeline
-    (streaming.py) can align one frame at a time without needing every frame
-    resident in memory at once.
-    """
+    """align one frame onto a reference. shared by align_frames() and
+    streaming.py so streaming can align one frame at a time."""
     src_gray = to_luminance(frame.data)
 
     if have_astroalign:
@@ -143,7 +113,7 @@ def align_single(
 def align_frames(
     frames: list[Frame], reference_index: int = 0
 ) -> tuple[list[Frame], list[AlignmentInfo]]:
-    """Align every frame in ``frames`` onto ``frames[reference_index]``."""
+    """align every frame onto frames[reference_index]."""
     if not frames:
         raise ValueError("No frames to align")
 
