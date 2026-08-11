@@ -31,6 +31,10 @@ def run_pipeline(
     bit_depth: int = 16,
     memory_budget_mb: float = DEFAULT_IN_MEMORY_BUDGET_MB,
 ) -> dict:
+    """Run the complete astrophotography processing pipeline from input folder to output image.
+
+    Automatically selects in-memory or streaming mode based on estimated memory usage.
+    """
     input_dir = Path(input_dir)
     output_path = Path(output_path)
 
@@ -86,6 +90,7 @@ def _run_in_memory_pipeline(
     recursive: bool = False,
     bit_depth: int = 16,
 ) -> dict:
+    """Run pipeline with all frames loaded into memory at once."""
     input_dir = Path(input_dir)
     output_path = Path(output_path)
 
