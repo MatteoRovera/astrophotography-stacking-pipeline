@@ -16,22 +16,20 @@ from astro_stack.streaming import (
 
 
 def test_estimate_chunk_rows_respects_budget():
-    # A tiny budget for many frames of a wide image should force chunking
-    # (fewer rows per chunk than the image actually has).
+    """a tiny budget should force small chunks, a big budget should allow it all at once."""
     rows = estimate_chunk_rows(n_frames=50, width=4000, channels=3, budget_bytes=1024 * 1024)
     assert 1 <= rows < 200
 
-    # A generous budget for a small image should allow the whole thing at once.
     rows_big = estimate_chunk_rows(n_frames=5, width=10, channels=1, budget_bytes=1024 * 1024 * 1024)
     assert rows_big >= 100
 
 
 def test_chunked_combine_matches_eager_combine(tmp_path):
+    """row-chunked combine should match the plain in-memory combine exactly."""
     rng = np.random.default_rng(0)
-    n, h, w = 7, 23, 17  # deliberately not a multiple of the chunk size
+    n, h, w = 7, 23, 17  # not a multiple of the chunk size, on purpose
     stack = rng.uniform(0, 1, size=(n, h, w)).astype(np.float32)
-    # Inject an outlier in one frame so sigma-clip rejection actually engages.
-    stack[3, 5, 5] = 50.0
+    stack[3, 5, 5] = 50.0  # outlier so sigma-clip rejection actually engages
 
     for i in range(n):
         _write_array_to_disk(stack[i], tmp_path / f"src_{i}.dat")
@@ -45,8 +43,7 @@ def test_chunked_combine_matches_eager_combine(tmp_path):
         }[method]
 
         out_mm = np.memmap(tmp_path / f"out_{method}.dat", mode="w+", dtype=np.float32, shape=(h, w))
-        # chunk_rows=4 forces several row-bands so this actually exercises chunking.
-        chunked_combine(memmaps, method, sigma=3.0, maxiters=5, out=out_mm, chunk_rows=4)
+        chunked_combine(memmaps, method, sigma=3.0, maxiters=5, out=out_mm, chunk_rows=4)  # small chunk_rows exercises chunking
 
         assert np.allclose(np.array(out_mm), expected, atol=1e-5), f"mismatch for method={method}"
 
@@ -82,6 +79,7 @@ def _make_dataset(root: Path, size: int = 40) -> Path:
 
 
 def test_streaming_pipeline_matches_in_memory_pipeline(tmp_path):
+    """the streaming and in-memory pipelines should agree on the same data."""
     dataset_dir = tmp_path / "data"
     dataset_dir.mkdir()
     _make_dataset(dataset_dir)
@@ -117,9 +115,9 @@ def test_streaming_pipeline_matches_in_memory_pipeline(tmp_path):
     assert streaming_summary["mode"] == "streaming"
     assert in_memory_summary["mode"] == "in-memory"
 
-    # Same math, same data -- noise reduction should agree closely between
-    # the two orchestration paths (small differences are possible since
-    # alignment can independently pick astroalign vs. phase-correlation).
+    # same math, same data, so noise reduction should agree closely (small
+    # differences are possible since alignment can pick astroalign vs
+    # phase correlation independently on each path)
     streaming_noise = streaming_summary["noise_report"]["after"].noise_std
     in_memory_noise = in_memory_summary["noise_report"]["after"].noise_std
     assert streaming_noise == pytest.approx(in_memory_noise, rel=0.2)
