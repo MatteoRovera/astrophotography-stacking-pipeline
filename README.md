@@ -180,3 +180,5 @@ pytest tests/ -v
 - `test_calibration.py`: a synthetic dark frame with a known constant offset gets subtracted out exactly, a synthetic flat with a known vignetting pattern gets divided out, and calibration is confirmed to be a clean no-op when no calibration frames are present.
 - `test_loader.py`: filename-based frame-type classification, including the underscore-prefix case (`Bias_000.fits`, `Dark_005s_000.fits`, and so on) and the single-letter DSLR convention (`L_`/`D_`/`F_`/`B_`) that broke on first contact with real data.
 - `test_streaming.py`: the chunked, memmap-backed combine used by streaming mode produces the same result as the plain in-memory combine, and the full streaming pipeline agrees with the in-memory pipeline on the same synthetic dataset.
+
+_Last updated: 2026-08-12_

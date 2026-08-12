@@ -15,6 +15,7 @@ STRETCH_METHODS = ("percentile", "asinh", "none")
 
 
 def stretch_percentile(image: np.ndarray, low_pct: float = 0.25, high_pct: float = 99.75) -> np.ndarray:
+    """linear stretch between low and high percentile cutpoints."""
     lo, hi = np.percentile(image, [low_pct, high_pct])
     if hi <= lo:
         hi = lo + 1e-6
