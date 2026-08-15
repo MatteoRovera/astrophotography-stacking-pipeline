@@ -33,6 +33,7 @@ def median_combine(frames: list[Frame], label: str) -> np.ndarray:
 
 
 def build_master_bias(bias_frames: list[Frame]) -> Optional[np.ndarray]:
+    """combine bias frames into a master bias using median."""
     if not bias_frames:
         return None
     master = median_combine(bias_frames, "bias")
@@ -41,6 +42,7 @@ def build_master_bias(bias_frames: list[Frame]) -> Optional[np.ndarray]:
 
 
 def build_master_dark(dark_frames: list[Frame]) -> Optional[np.ndarray]:
+    """combine dark frames into a master dark using median."""
     if not dark_frames:
         return None
     master = median_combine(dark_frames, "dark")
@@ -66,6 +68,7 @@ def normalize_flat(
 def build_master_flat(
     flat_frames: list[Frame], master_bias: Optional[np.ndarray] = None
 ) -> Optional[np.ndarray]:
+    """combine flat frames into a normalized master flat using median."""
     if not flat_frames:
         return None
     combined = median_combine(flat_frames, "flat")
