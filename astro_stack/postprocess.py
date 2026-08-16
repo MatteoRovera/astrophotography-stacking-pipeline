@@ -24,6 +24,7 @@ def stretch_percentile(image: np.ndarray, low_pct: float = 0.25, high_pct: float
 
 
 def stretch_asinh(image: np.ndarray, black_point_pct: float = 1.0, scale: float = 10.0) -> np.ndarray:
+    """asinh stretch: linear near zero, logarithmic for bright values."""
     black = np.percentile(image, black_point_pct)
     shifted = np.clip(image - black, 0.0, None)
     max_val = float(shifted.max())
