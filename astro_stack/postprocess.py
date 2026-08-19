@@ -35,6 +35,7 @@ def stretch_asinh(image: np.ndarray, black_point_pct: float = 1.0, scale: float 
 
 
 def stretch_image(image: np.ndarray, method: str = "asinh", **kwargs) -> np.ndarray:
+    """apply a stretch method to remap intensity. 'none', 'percentile', or 'asinh'."""
     if method == "none":
         lo, hi = float(image.min()), float(image.max())
         if hi <= lo:
