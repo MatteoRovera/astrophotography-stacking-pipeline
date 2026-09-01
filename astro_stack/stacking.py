@@ -46,6 +46,7 @@ def stack_sigma_clip(data: np.ndarray, sigma: float = 3.0, maxiters: int = 5) ->
 def stack_frames(
     frames: list[Frame], method: str = "sigma", sigma: float = 3.0, maxiters: int = 5
 ) -> np.ndarray:
+    """combine a list of frames using the chosen stacking method."""
     if not frames:
         raise ValueError("No frames to stack")
     if method not in STACK_METHODS:

@@ -1,0 +1,1392 @@
+ASTROPHOTOGRAPHY STACKING PIPELINE
+A textbook-style guide to the field and to this project
+====================================================================
+
+HOW TO USE THIS DOCUMENT
+
+This is written like a textbook, not a README. It starts from first
+principles (what a camera sensor actually records, why images of the
+night sky are so noisy) and builds up, chapter by chapter, to the exact
+code in this project. Every acronym and piece of jargon is defined the
+first time it is used, in a labeled DEFINITION block, and every term also
+appears again in the Glossary at the very end (Chapter 14) so you can
+look things up out of order.
+
+You do not need any prior astronomy or image-processing background to
+read this front to back. You DO need to already know basic programming
+concepts (variables, functions, arrays) since Part II reads actual code.
+
+
+TABLE OF CONTENTS
+
+PART I — FOUNDATIONS: HOW ASTROPHOTOGRAPHY IMAGING WORKS
+  Chapter 1.  What a Camera Sensor Actually Records
+  Chapter 2.  Noise: The Enemy of Faint Detail
+  Chapter 3.  Why We Take Many Exposures Instead of One Long One
+  Chapter 4.  Calibration Frames: Removing Known Defects
+  Chapter 5.  Registration: Why and How Frames Get Aligned
+  Chapter 6.  Stretching: Preparing Data for Human Eyes
+
+PART II — THIS PROJECT'S ARCHITECTURE
+  Chapter 7.  Project Folder Map
+  Chapter 8.  Module-by-Module, Function-by-Function Reference
+  Chapter 9.  Automated Tests
+
+PART III — MEASURING RESULTS
+  Chapter 10. A Short Course in the Statistics This Project Uses
+  Chapter 11. How This Project Measures Noise and Signal-to-Noise Ratio
+  Chapter 12. Real-World Case Study: The Cocoon Nebula Dataset
+
+PART IV — WRAP-UP AND REFERENCE
+  Chapter 13. Limitations and Planned Improvements
+  Chapter 14. Glossary of Terms and Acronyms (alphabetical)
+
+
+====================================================================
+PART I — FOUNDATIONS: HOW ASTROPHOTOGRAPHY IMAGING WORKS
+====================================================================
+
+--------------------------------------------------------------------
+CHAPTER 1 — WHAT A CAMERA SENSOR ACTUALLY RECORDS
+--------------------------------------------------------------------
+
+A digital camera sensor is a grid of millions of light-sensitive
+"buckets" called photosites, one per pixel. Light arrives as individual
+particles called photons. When a photon hits a photosite, it has a
+chance of knocking loose an electron (this is the photoelectric effect).
+Over the length of an exposure, each photosite accumulates a small pile
+of electrons proportional to how much light landed on it. At the end of
+the exposure, the camera's electronics count roughly how many electrons
+piled up in each photosite and convert that count into a digital number.
+
+  DEFINITION — ADU (Analog-to-Digital Unit): the digital number a
+  sensor's electronics output for one pixel, after converting the
+  analog electron count into a number a computer can store. When this
+  document (or the code) talks about a pixel's "value" or "brightness,"
+  it usually means this number, or a rescaled version of it.
+
+  DEFINITION — CCD / CMOS: the two competing sensor technologies used in
+  cameras and telescopes (Charge-Coupled Device and Complementary
+  Metal-Oxide-Semiconductor). Both work on the photon-to-electron
+  principle above; they differ in how the accumulated charge is read out
+  electronically. Nearly all modern consumer cameras and phones use
+  CMOS sensors. This project does not need to know or care which type
+  produced an image — the math is identical either way.
+
+  DEFINITION — ISO: a camera setting that amplifies the sensor's signal
+  electronically before it is converted to a digital number. A higher
+  ISO makes a dim image look brighter, but it amplifies noise right
+  along with the real signal — it does not create new information.
+
+  DEFINITION — exposure time (also "integration time"): how long the
+  shutter stays open, letting photons accumulate. Longer exposures
+  collect more real signal, but also let more randomness (see Chapter 2)
+  build up.
+
+Color: the Bayer filter and demosaicing.
+A single photosite has no way to tell what color of light hit it — it
+just counts electrons. To capture color, almost every consumer camera
+sensor is covered with a grid of tiny red, green, and blue filters, one
+over each photosite, in a repeating pattern.
+
+  DEFINITION — Bayer filter / Color Filter Array (CFA): the grid of
+  red/green/blue filters placed over a sensor's photosites. The most
+  common layout is called RGGB: for every 2x2 block of photosites, one
+  is filtered red, two are filtered green, and one is filtered blue.
+  There are twice as many green-filtered photosites as red or blue,
+  because human vision is most sensitive to green light, so this
+  pattern gives the sharpest-looking result to the human eye.
+
+  DEFINITION — demosaicing (also "debayering"): the process of turning
+  the raw grid of single-color pixel readings (one color per photosite)
+  into a full-color image where every pixel has a red, green, AND blue
+  value, by interpolating each missing color from its neighbors. This
+  is a mathematically involved step, and it is one reason a camera's
+  RAW file needs special software to open: it hasn't been demosaiced
+  yet.
+
+This project matters here because a Bayer sensor's built-in green bias
+is the direct cause of the green color cast visible in this project's
+current output (see Chapter 13) — it isn't a processing mistake, it's a
+physical property of the sensor that this project doesn't yet correct
+for.
+
+  DEFINITION — RAW (camera format): a file containing a camera sensor's
+  UN-demosaiced, minimally processed pixel readings, plus metadata.
+  Canon's RAW extension is .cr2, Nikon's is .nef, Sony's is .arw, and
+  most phone RAW captures use the generic .dng extension. RAW preserves
+  more of the original sensor data than a compressed JPEG, which is why
+  astrophotographers prefer it.
+
+  DEFINITION — DSLR: Digital Single-Lens Reflex, a camera design (using
+  a mirror and optical viewfinder) common among astrophotography camera
+  bodies, including the Canon camera used to capture this project's
+  real test dataset. The term shows up throughout this project simply
+  as shorthand for "a real interchangeable-lens camera," as opposed to
+  a phone.
+
+
+--------------------------------------------------------------------
+CHAPTER 2 — NOISE: THE ENEMY OF FAINT DETAIL
+--------------------------------------------------------------------
+
+"Noise" means any variation in a pixel's recorded value that does NOT
+come from real light hitting that pixel. A faint nebula might only add a
+handful of extra electrons per pixel over a whole exposure — if the
+noise floor is bigger than that, the nebula is invisible, buried in
+randomness. Three main sources of noise matter for this project:
+
+  DEFINITION — shot noise (also "photon noise"): even a perfectly
+  engineered, flawless sensor would still show random variation between
+  pixels receiving the same true amount of light, because light itself
+  arrives in discrete, randomly-timed photons. This is a fundamental
+  property of light, described by Poisson statistics, not a flaw in any
+  particular camera. The brighter the true signal, the bigger the
+  absolute shot noise, but the SMALLER it is relative to the signal —
+  which is one reason longer exposures (collecting more photons) look
+  cleaner.
+
+  DEFINITION — read noise: noise added by the camera's own electronics
+  every time a pixel's value is measured and converted to a digital
+  number, independent of how much light was captured. This is why even
+  a zero-second exposure (see "bias frame," Chapter 4) still shows some
+  random pixel-to-pixel variation.
+
+  DEFINITION — dark current (also "thermal noise"): heat inside the
+  sensor itself knocks loose stray electrons even with zero light
+  hitting it, and this effect gets stronger as exposure time increases
+  and as the sensor gets warmer. This is why a "dark frame" (Chapter 4)
+  has to be shot at the same exposure time and, ideally, the same
+  temperature as the real exposures it corrects.
+
+  DEFINITION — hot pixel / dead pixel: an individual photosite that is
+  defective, reading permanently brighter (hot) or darker/unresponsive
+  (dead) than its neighbors regardless of actual light.
+
+  DEFINITION — cosmic ray hit: a high-energy particle from space that
+  occasionally strikes a sensor directly and dumps a large, spurious
+  charge into one or a few pixels in a single exposure, showing up as a
+  bright speck that has nothing to do with the sky. Different from a hot
+  pixel because it happens randomly in a different, unpredictable
+  location in each exposure, rather than always the same photosite.
+
+  DEFINITION — Signal-to-Noise Ratio (SNR): a single number describing
+  how much a real signal stands out above the random noise floor,
+  usually computed as (signal strength) / (noise level). A higher SNR
+  means the real content is more clearly distinguishable from random
+  variation. This project computes and reports SNR directly — see
+  Chapter 11 for exactly how.
+
+  DEFINITION — dynamic range: the ratio between the brightest and
+  faintest meaningfully-recorded signal a sensor (or an image) can
+  represent. Astronomical images have an enormous dynamic range — the
+  faint outer glow of a nebula might be a thousand times dimmer than a
+  star in the same frame — which is the whole reason Chapter 6
+  ("stretching") is necessary before a human can see both at once.
+
+
+--------------------------------------------------------------------
+CHAPTER 3 — WHY WE TAKE MANY EXPOSURES INSTEAD OF ONE LONG ONE
+--------------------------------------------------------------------
+
+Given the noise sources in Chapter 2, there are two ways to try to
+reveal a faint target buried in noise: take one very long exposure, or
+take many shorter exposures of the same target and combine them
+afterward. Astrophotography (and this project) uses the second approach,
+called stacking or integration.
+
+  DEFINITION — light frame (also "sub-exposure," or just "a sub"): one
+  individual, real photograph of the actual target (a nebula, a
+  galaxy, the Moon, whatever the camera is pointed at). This is the
+  data that actually contains the picture you want.
+
+  DEFINITION — stacking (also "integration"): combining many light
+  frames of the same target into a single output image, in a way that
+  reinforces the real signal while reducing the relative contribution
+  of random noise.
+
+Here is the math for why this works, spelled out:
+
+  Assume the noise in each pixel is random and independent from frame
+  to frame (a reasonable assumption for shot noise and read noise).
+
+  - If you average N frames together, the TRUE SIGNAL in each pixel is
+    the same in every frame, so it just adds up directly: N times as
+    much real signal, on average, as one frame.
+  - The NOISE in each frame, however, is random and uncorrelated
+    between frames. Random, independent quantities don't add up
+    directly when averaged — they add "in quadrature" (this is a
+    standard result from probability theory: the variance of a sum of
+    independent random variables is the sum of their variances, and
+    standard deviation is the square root of variance). The net result
+    is that the noise only grows by the SQUARE ROOT of N, not by N
+    itself.
+  - Signal-to-noise ratio is signal divided by noise. Signal grew by N,
+    noise grew by sqrt(N), so SNR improves by N / sqrt(N) = sqrt(N).
+
+  This is the single most important formula in this whole project:
+  stacking N independent exposures improves SNR by a factor of sqrt(N).
+  Stack 4 frames, expect roughly 2x cleaner. Stack 100 frames, expect
+  roughly 10x cleaner (in the ideal case — see Chapter 12 for why real
+  results usually fall a bit short of this ideal).
+
+There are also practical reasons beyond the math to prefer many short
+exposures over one long one: a single very long exposure risks the
+brightest stars overflowing ("saturating") the sensor's pixel wells
+long before the faint background is well exposed, a telescope's tracking
+only has to stay accurate for a shorter window per exposure, and if a
+single frame is ruined (a plane flies through it, a cloud drifts by), you
+only lose that one short frame instead of the whole session.
+
+
+--------------------------------------------------------------------
+CHAPTER 4 — CALIBRATION FRAMES: REMOVING KNOWN DEFECTS
+--------------------------------------------------------------------
+
+Stacking (Chapter 3) reduces RANDOM noise. But some of what shows up in
+a photo isn't random at all — it's a fixed, repeatable defect of that
+specific camera and optical setup, and stacking alone does nothing to
+remove it (averaging the same fixed defect into every frame just leaves
+it in the average, unchanged). Calibration frames exist specifically to
+measure these fixed defects so they can be subtracted or divided out
+mathematically before stacking.
+
+  DEFINITION — dark frame: an exposure taken with the lens capped or the
+  telescope covered (zero real light reaches the sensor), using the
+  SAME exposure time and, ideally, the same sensor temperature as the
+  real light frames. Since no real light got in, whatever pixel values
+  a dark frame shows are entirely read noise and dark current (Chapter
+  2) — the "fixed defect" for that exposure length and temperature.
+  Subtracting a dark frame from a light frame removes that fixed
+  pattern, leaving mostly just the real signal and shot noise behind.
+
+  DEFINITION — bias frame: the shortest possible exposure the camera can
+  take (effectively zero seconds), still with the lens capped. Since
+  there's essentially no time for dark current to build up, a bias
+  frame isolates just the sensor's read noise / fixed electronic offset,
+  with none of the thermal component a longer dark frame would also
+  contain. Used to clean up a flat frame's own bias content (below), or
+  as a rough stand-in for a dark frame when no properly-matched dark is
+  available (this only removes the fixed offset, not thermal buildup,
+  so it's an approximation that works better for shorter exposures).
+
+  DEFINITION — flat frame (also "flat field"): a photo of an evenly,
+  uniformly lit target — a twilight sky, or a dedicated light panel —
+  through the exact same optical path (same lens/telescope, same focus,
+  same orientation) as the real light frames. Because the light hitting
+  a flat frame really is uniform, ANY variation across a flat frame's
+  pixels must be an optical defect, not real content. Two defects show
+  up here specifically:
+
+    DEFINITION — vignetting: natural dimming toward the corners/edges of
+    an image, caused by the physical geometry of a lens or telescope
+    letting slightly less light reach the sensor's edges than its
+    center.
+
+    DEFINITION — dust shadow (sometimes nicknamed a "dust donut"): a
+    small, usually ring-shaped dim spot caused by a speck of dust
+    sitting on the sensor's cover glass or a nearby optical element,
+    casting a tiny out-of-focus shadow.
+
+  Unlike a dark frame (which gets SUBTRACTED, because its defect is
+  additive — extra unwanted electrons piling up), a flat frame gets
+  DIVIDED, because its defect is multiplicative — it scales real signal
+  down by some fraction at each pixel, rather than adding a fixed
+  amount.
+
+  DEFINITION — master frame (e.g. "master dark," "master flat," "master
+  bias"): a single combined frame built by averaging or median-combining
+  MANY individual calibration frames of the same type together. A
+  single dark frame still has its own random noise in it; combining
+  many of them cancels that randomness out (exactly the same sqrt(N)
+  logic from Chapter 3) so the master represents the TRUE fixed defect
+  pattern as cleanly as possible, without also injecting a fresh dose of
+  random noise from the calibration frame itself into every corrected
+  light frame.
+
+  DEFINITION — median (as used for combining master frames): given a
+  list of numbers, the median is the middle value when they're sorted
+  (or the average of the two middle values, for an even count). This
+  project uses the median instead of a plain average specifically when
+  building master calibration frames, because a median completely
+  ignores a one-off outlier (a cosmic ray hit that happened to land in
+  just one of the calibration sub-frames), whereas an average would
+  blend that outlier's contamination into the result.
+
+Putting it together, the correction this project applies to every light
+frame is:
+
+    calibrated = (light − master_dark) / normalized_master_flat
+
+  DEFINITION — image calibration: the general term for this whole
+  process — using dark, bias, and flat frames to remove known, fixed
+  camera/optics defects from a light frame, before any stacking happens.
+
+If none of these calibration frames are available (as with an ordinary
+phone photo), this step is simply skipped, and the light frames are used
+as-is. It is optional, not mandatory, for the pipeline to run.
+
+
+--------------------------------------------------------------------
+CHAPTER 5 — REGISTRATION: WHY AND HOW FRAMES GET ALIGNED
+--------------------------------------------------------------------
+
+Stacking (Chapter 3) only works correctly if a given star (or a given
+patch of nebula) sits at the SAME pixel location in every frame being
+combined. In practice it never does automatically: a telescope's motor
+tracking is never perfectly accurate, a handheld camera moves between
+shots, and even a well-tracked mount can introduce a slow rotation of
+the field over a long session.
+
+  DEFINITION — field rotation: a slow apparent rotation of the whole
+  starry sky, relative to the camera frame, that happens with certain
+  mount designs (particularly simpler alt-azimuth mounts) even while
+  tracking the sky's motion correctly. A plain sideways pixel shift
+  cannot correct for this; a full rotation+shift correction is needed.
+
+  DEFINITION — registration (also "alignment"): the process of
+  mathematically shifting (and, if needed, rotating and rescaling) each
+  frame so that the same real object lands on the same pixel location
+  in every frame, using one chosen frame as the fixed reference that all
+  the others are aligned to.
+
+This project considered three different techniques for registration and
+implements two of them, automatically switching between them per frame:
+
+  DEFINITION — asterism / star-triangle matching (implemented, via the
+  "astroalign" library): an asterism is simply a recognizable pattern of
+  stars (the word is used the same way as "constellation," but more
+  informally, for any locally-recognizable star grouping). This
+  technique finds bright, point-like sources in an image (candidate
+  stars), picks triplets of them, and forms a triangle out of each
+  triplet. The ratio between a triangle's side lengths does not change
+  if the whole image is rotated, uniformly scaled, or shifted — so
+  matching triangles BY SHAPE between two images, even if one image is
+  rotated relative to the other, reliably identifies which stars in one
+  frame correspond to which stars in the other. Once enough matching
+  point pairs are found this way, the exact rotation + scale + shift
+  needed to line the two images up can be solved directly. This handles
+  field rotation correctly, but it needs a reasonable NUMBER of clearly
+  detected stars to form triangles from — it has nothing to work with on
+  a nearly empty frame.
+
+  DEFINITION — phase correlation (implemented, via a Fast Fourier
+  Transform): every image can be mathematically decomposed into a sum of
+  overlapping wave patterns of different frequencies and directions —
+  this decomposition is called a Fourier Transform, and the FFT (Fast
+  Fourier Transform) is simply a very efficient computer algorithm for
+  computing it. If one image is just a shifted copy of another, that
+  shift shows up as a very specific, directly computable pattern in the
+  PHASE (relative alignment) of their two Fourier transforms, without
+  needing to identify any individual stars or points at all. This
+  technique only recovers a straight-line shift (no rotation or
+  scaling), but it keeps working even with just one or two point sources
+  — or no point sources at all, as long as there's SOME sharp-edged
+  content to lock onto, such as the Moon's crisp limb (edge).
+
+  DEFINITION — feature matching with RANSAC (considered, NOT
+  implemented): a more general computer-vision technique (using
+  algorithms commonly named ORB or SIFT) that finds distinctive visual
+  "keypoints" in an image — corners, textured patches — computes a
+  numeric "fingerprint" (descriptor) for each one, and matches keypoints
+  between two images by comparing fingerprints. RANSAC (RANdom SAmple
+  Consensus) is then used to find the best geometric transform that's
+  consistent with as many matched points as possible, while ignoring bad
+  matches. This works well for photographing textured, non-astronomical
+  scenes (or for a close-up of the Moon's cratered surface), but stars
+  are all small, nearly featureless, nearly identical bright blobs — so
+  their "fingerprints" don't distinguish well from each other, making
+  this a poor fit for ordinary star fields. This project's README
+  documents this option and the reasoning for not implementing it.
+
+The decision this project makes: try astroalign (star-triangle matching)
+first, since it correctly handles field rotation and is the right tool
+for the common case of a real star field. If astroalign cannot find
+enough matched stars (it raises an error) or isn't installed, fall back
+automatically to phase correlation for that specific frame. This one
+fallback rule is what lets a single pipeline handle both a rich Milky
+Way shot and a nearly starless handheld Moon photo without the user
+needing to choose a method manually.
+
+
+--------------------------------------------------------------------
+CHAPTER 6 — STRETCHING: PREPARING DATA FOR HUMAN EYES
+--------------------------------------------------------------------
+
+  DEFINITION — linear data: image data where a pixel's numeric value is
+  directly proportional to how much real light hit that pixel — twice
+  as much light produces exactly twice the pixel value. Data straight
+  out of a calibrated, stacked astronomical image is linear.
+
+  DEFINITION — gamma correction: a standard non-linear remapping (an
+  exponent-based curve) applied to ordinary consumer photos and video, so
+  that stored pixel values better match how human vision perceives
+  brightness differences (human perception of brightness is itself
+  roughly logarithmic, not linear). This project deliberately DISABLES
+  gamma correction when decoding camera RAW files (see Chapter 8,
+  loader.py), specifically so the data stays linear and calibration math
+  (Chapter 4) remains mathematically valid — gamma-corrected data cannot
+  be correctly dark-subtracted or flat-divided.
+
+The problem stretching solves: because of the enormous dynamic range in
+astronomical images (Chapter 2), displaying LINEAR data directly on an
+ordinary 8-bit screen produces an image that is almost entirely black,
+with only the very brightest stars showing up as a few white dots — all
+the faint nebulosity and dim outer detail gets compressed into the
+handful of the very lowest, visually indistinguishable brightness
+levels. "Stretching" is any deliberate, non-linear remapping of pixel
+brightness that spreads the faint end out to become visible, without
+necessarily preserving the original linear proportionality.
+
+  DEFINITION — histogram: a chart of how many pixels in an image have
+  each possible brightness value. Standing in for "the distribution of
+  brightness across the whole image," a histogram is what percentile-
+  based stretching (below) is computed from.
+
+  DEFINITION — percentile: the value below which a given percentage of a
+  dataset falls. The "1st percentile" of an image's pixel brightness is
+  the value below which only the darkest 1% of pixels fall. This project
+  uses percentiles (rather than the single absolute minimum/maximum
+  pixel value) as more robust stand-ins for "black point" and "white
+  point," since a single outlier pixel can't drag a percentile-based
+  estimate around the way it could an absolute min/max.
+
+  DEFINITION — asinh stretch (inverse hyperbolic sine stretch, also
+  called a "Lupton stretch" after the astronomer Robert Lupton, who
+  popularized it for the Sloan Digital Sky Survey's public color
+  images): a non-linear remapping using the mathematical function
+  arcsinh(x). This function behaves almost exactly like a straight line
+  for small input values, and bends into a logarithmic curve for large
+  input values. Applied to astronomical image data, this means faint,
+  near-background signal gets stretched close to proportionally
+  (avoiding exaggerating noise), while bright signal (star cores) gets
+  compressed logarithmically instead of being clipped abruptly to solid
+  white. This is the default stretch method in this project.
+
+
+====================================================================
+PART II — THIS PROJECT'S ARCHITECTURE
+====================================================================
+
+--------------------------------------------------------------------
+CHAPTER 7 — PROJECT FOLDER MAP
+--------------------------------------------------------------------
+
+  DEFINITION — CLI (Command-Line Interface): a way of running a program
+  by typing a command and flags into a terminal, rather than clicking
+  buttons in a graphical window. This project is entirely a CLI tool.
+
+  DEFINITION — Python package: a folder containing an __init__.py file
+  and one or more .py (Python source code) files, which lets Python's
+  "import" system treat the whole folder as one importable unit. The
+  astro_stack/ folder in this project is a package for exactly this
+  reason.
+
+Astrophotography Stacking Pipeline (Python)/
+|
+|-- stack.py                    <- the CLI program you actually run
+|
+|-- astro_stack/                <- the pipeline code, as a Python package
+|   |-- __init__.py             <- marks the folder as a package
+|   |-- loader.py               <- reads files, classifies light/dark/flat/bias
+|   |-- calibration.py          <- builds master dark/flat/bias, corrects lights
+|   |-- alignment.py            <- registration (Chapter 5)
+|   |-- stacking.py             <- integration (Chapter 3) + metrics (Chapter 11)
+|   |-- postprocess.py          <- stretching (Chapter 6), saves the output file
+|   |-- pipeline.py             <- runs every stage in the right order
+|   |-- streaming.py            <- a memory-bounded version of the pipeline
+|
+|-- tests/                      <- automated proof the algorithms are correct
+|   |-- test_loader.py
+|   |-- test_calibration.py
+|   |-- test_alignment.py
+|   |-- test_stacking.py
+|   |-- test_streaming.py
+|
+|-- conftest.py                 <- pytest setup file
+|-- requirements.txt            <- external library dependencies
+|-- .gitignore                  <- files/folders excluded from version control
+|-- README.md                   <- the public-facing explanation and results
+|-- cocoon_result_preview.png   <- sample result image
+
+  DEFINITION — dependency (as in requirements.txt): an external software
+  library this project relies on but did not write itself. See Chapter 8
+  for what each one is used for.
+
+
+--------------------------------------------------------------------
+CHAPTER 8 — MODULE-BY-MODULE, FUNCTION-BY-FUNCTION REFERENCE
+--------------------------------------------------------------------
+
+Each subsection below covers one file. Function names are given exactly
+as they appear in the code. Terms already defined in Part I are used
+freely here without redefining them — if something is unclear, check the
+Glossary (Chapter 14).
+
+====== 8.1  astro_stack/loader.py ======
+
+Purpose: turn a file on disk into usable pixel data, and figure out
+whether it's a light, dark, flat, or bias frame (Chapter 4).
+
+  DEFINITION — FITS (Flexible Image Transport System): the standard file
+  format used throughout professional and amateur astronomy for storing
+  images plus their observational metadata (exposure time, telescope,
+  filter, date, etc.) in a single file. A FITS file is organized into
+  one or more HDUs.
+
+  DEFINITION — HDU (Header Data Unit): one block within a FITS file,
+  containing a text header (metadata as human-readable key/value pairs)
+  and, usually, an attached block of pixel data. Some FITS files keep
+  their main image in a secondary HDU rather than the first ("primary")
+  one, which is why loader.py's FITS-reading code specifically searches
+  for the first HDU that actually has attached pixel data.
+
+  DEFINITION — NAXIS, EXPTIME (FITS header keywords): standard FITS
+  header fields. NAXIS and NAXIS1/NAXIS2/... describe an image's
+  dimensions (how many axes, and how many pixels along each axis).
+  EXPTIME records the exposure time in seconds. This project reads
+  NAXIS to estimate an image's size without decoding its pixel data
+  (see estimate_decoded_bytes below), and reads EXPTIME as optional
+  metadata.
+
+  DEFINITION — LibRaw / rawpy: LibRaw is a widely used open-source
+  library that knows how to decode camera RAW files from essentially
+  every camera manufacturer. rawpy is the Python interface this project
+  uses to call into LibRaw.
+
+  DEFINITION — regular expression (regex) / word boundary: a regular
+  expression is a pattern-matching mini-language for text. A "word
+  boundary" (written \b) is a position in text where a "word character"
+  (a letter, digit, or underscore) meets a non-word character. This
+  project's filename-classification code originally tried to use a word-
+  boundary pattern to detect the word "bias" in a filename, and this
+  broke on filenames like "Bias_000.fits" — because the underscore
+  right after "Bias" is ITSELF counted as a word character by regex
+  engines, there is no boundary there at all, so the pattern silently
+  never matched. This is documented in detail in Chapter 12 as a real
+  bug this project's real-world testing found and fixed.
+
+Constants:
+  FITS_EXTS, RAW_EXTS, STANDARD_EXTS — sets of recognized file
+  extensions for the three format families this project reads.
+  FRAME_TYPES = ("light", "dark", "flat", "bias") — the four frame types
+  from Chapter 3 and Chapter 4.
+
+Frame (class):
+  A Python "dataclass" (a class whose main job is to bundle related data
+  together) holding one decoded image and its metadata: the pixel array,
+  the source file path, which of the four frame types it is, its
+  exposure time if known, and the raw file header. This is the object
+  passed between every pipeline stage.
+
+classify_filename(name) -> str:
+  Splits a filename into tokens on any character that isn't a letter or
+  digit, then checks: (1) is the FIRST token a single letter matching
+  L/D/F/B (some DSLR capture tools name files this way, e.g.
+  "L_0020...CR2")? (2) does any token exactly match the word "light"/
+  "dark"/"flat"/"bias"? Defaults to "light" if neither matches, since an
+  unlabeled file is almost always a real sky photo rather than a
+  calibration shot.
+
+_load_fits(path), _load_raw(path), _load_standard(path):
+  Three private per-format decoder functions.
+    - _load_fits uses the astropy library's FITS reader.
+    - _load_raw uses rawpy to demosaic (Chapter 1) a camera RAW file,
+      with gamma correction and auto-brightness explicitly disabled
+      (Chapter 6) so the output stays linear.
+    - _load_standard uses the imageio library for ordinary JPEG/PNG/
+      TIFF files, normalizing pixel values into a 0-1 float range.
+
+load_frame(path) -> Frame:
+  Picks the correct decoder by file extension, then classifies the
+  result using classify_filename.
+
+load_folder(input_dir, recursive=False) -> dict[str, list[Frame]]:
+  Scans an entire folder, decodes every supported file, and returns four
+  lists keyed "light"/"dark"/"flat"/"bias". This is what the simple,
+  in-memory pipeline path (Chapter 8.6) uses.
+
+scan_folder(input_dir, recursive=False) -> dict[str, list[Path]]:
+  Same folder scan and classification as load_folder, but WITHOUT
+  decoding any pixel data — used purely to estimate a dataset's size
+  cheaply (see next function).
+
+estimate_decoded_bytes(path) -> int:
+  Estimates how many bytes one file will occupy once fully decoded,
+  without actually decoding it: reads only a FITS file's header NAXIS
+  keywords, only a RAW file's sensor-dimension metadata (via rawpy,
+  which can report this without running the expensive demosaic step),
+  or only a standard image's lazily-read dimensions (via the PIL/Pillow
+  library). This estimate is what decides in-memory vs. streaming mode
+  (Chapter 8.6/8.7).
+
+====== 8.2  astro_stack/calibration.py ======
+
+Purpose: implement Chapter 4's math.
+
+_stack_matching_shape(frames, label) -> ndarray:
+  Combines a list of Frame objects into one array, silently dropping any
+  frame whose pixel dimensions don't match the rest (with a logged
+  warning) instead of crashing.
+
+  DEFINITION — ndarray: short for "N-dimensional array," the core data
+  structure of the NumPy library, used throughout this project to store
+  image pixel data as a grid of numbers that can be manipulated with
+  fast, vectorized math operations instead of slow per-pixel loops.
+
+median_combine(frames, label) -> ndarray:
+  Combines frames using the per-pixel median (Chapter 4's reasoning for
+  why median, not mean, is used for master frames).
+
+build_master_bias / build_master_dark(frames) -> ndarray or None:
+  Median-combine a list of bias or dark frames into one master frame.
+  Return None if the list is empty, so downstream code can detect "this
+  calibration type isn't available" and adapt.
+
+normalize_flat(combined, master_bias=None) -> ndarray or None:
+  Optionally subtracts the master bias from an already-combined flat,
+  then divides the whole array by its own mean so the result has a mean
+  of exactly 1.0. This normalization is what makes dividing by the flat
+  correct only RELATIVE brightness (vignetting/dust, Chapter 4) rather
+  than changing the image's overall brightness.
+
+build_master_flat(flat_frames, master_bias=None) -> ndarray or None:
+  Median-combines flats, then calls normalize_flat.
+
+calibrate_light(light, master_dark, master_bias, master_flat) -> Frame:
+  Applies calibrated = (light − master_dark) / normalized_master_flat,
+  falling back to bias-only subtraction if there's no matching dark, and
+  clipping the flat to a small positive minimum before dividing (to
+  avoid a division-by-near-zero blowing up at a dead or heavily
+  vignetted pixel).
+
+calibrate_lights(buckets) -> list[Frame]:
+  The main entry point: if there are NO dark/flat/bias frames at all,
+  logs that calibration is being skipped and returns the light frames
+  untouched (this is the mechanism behind the "just phone photos, no
+  calibration set" use case). Otherwise builds whatever master frames it
+  can and calibrates every light frame against them.
+
+====== 8.3  astro_stack/alignment.py ======
+
+Purpose: implement Chapter 5's registration techniques.
+
+  DEFINITION — ITU-R BT.709: an international standard defining, among
+  other things, the standard weights (0.2126 red, 0.7152 green, 0.0722
+  blue) used to combine a color image's three channels into one
+  brightness ("luminance") value, matching how human vision weighs each
+  color's contribution to perceived brightness. This project uses these
+  exact weights to convert color frames to grayscale before star
+  detection, since detecting stars only needs brightness, not color.
+
+to_luminance(data) -> ndarray:
+  Applies the BT.709 weights above to collapse a color image to
+  grayscale, or returns already-grayscale data unchanged.
+
+_warp_with_transform(data, transform, output_shape) -> ndarray:
+  Applies a solved rotation+scale+shift transform to an image, using the
+  scikit-image library's warp function; handles color images by warping
+  each of the R/G/B channels separately with the identical transform.
+
+_phase_correlation_shift(ref_gray, src_gray) -> ndarray:
+  Computes the FFT-based phase-correlation shift (Chapter 5) between two
+  grayscale images, using scikit-image, upsampled for sub-pixel
+  precision.
+
+_shift_image(data, shift) -> ndarray:
+  Applies a plain (no rotation) pixel shift to an image using SciPy.
+
+check_astroalign_available() -> bool:
+  Checks once whether the astroalign library is installed, so the rest
+  of the code can skip straight to phase correlation for every frame
+  (with one clear warning) if it's missing, rather than repeating the
+  same warning per frame.
+
+align_single(frame, ref_gray, have_astroalign) -> (ndarray or None, AlignmentInfo):
+  Aligns exactly one frame: tries astroalign's star-triangle matching
+  first (Chapter 5), falls back to phase correlation if astroalign fails
+  or isn't installed. Returns None (with a "failed" status) only if both
+  approaches raise an error. Pulled out as its own function specifically
+  so the streaming pipeline (Chapter 8.7) can align frames one at a time
+  without needing every frame loaded into memory simultaneously.
+
+align_frames(frames, reference_index=0) -> (list[Frame], list[AlignmentInfo]):
+  Picks one frame as the fixed reference, calls align_single on every
+  other frame, and returns the aligned results plus a full log of which
+  method was used and how well it worked per frame.
+
+====== 8.4  astro_stack/stacking.py ======
+
+Purpose: implement Chapter 3's combination math, plus Chapter 11's
+metrics.
+
+  DEFINITION — sigma clipping: an iterative statistical technique.
+  Compute the mean and standard deviation of a set of numbers, discard
+  any value more than a chosen number of standard deviations ("sigma")
+  away from the mean, then recompute the mean/standard deviation on
+  what's left and repeat, for a fixed number of rounds. This
+  automatically identifies and removes outliers without a human having
+  to manually decide which values are bad. This project uses it in two
+  places: combining stacked frames (this chapter) and estimating
+  background statistics (Chapter 11) — see Chapter 10 for a fuller
+  statistics primer.
+
+stack_mean(data) -> ndarray:
+  A plain per-pixel average across frames. Mathematically optimal for
+  independent random noise (gets the full sqrt(N) benefit from Chapter
+  3), but has no way to reject a bad pixel — a satellite trail or cosmic
+  ray hit in even one frame gets blended into the result.
+
+stack_median(data) -> ndarray:
+  The per-pixel median instead of the mean. Fully immune to a minority
+  of bad frames at any pixel, at the cost of being statistically less
+  efficient than the mean for large numbers of frames (needs roughly
+  1.57x as many frames to match the mean's noise reduction).
+
+stack_sigma_clip(data, sigma=3.0, maxiters=5) -> ndarray:
+  The default method, and what most real astrophotography stacking
+  software uses. Applies sigma clipping (defined above) independently at
+  every pixel across the stack of frames, then averages what's left.
+  This rejects outliers the way a median does, while staying closer to
+  the mean's noise performance, since it only discards the actual bad
+  values instead of collapsing everything to a middle value. Falls back
+  to the plain mean at the rare pixel where every single frame gets
+  clipped away, instead of leaving an undefined result there.
+
+stack_frames(frames, method="sigma", sigma=3.0, maxiters=5) -> ndarray:
+  The public entry point dispatching to one of the three functions
+  above.
+
+NoiseStats (class) / measure_noise_snr(image) -> NoiseStats:
+  Covered in full in Chapter 11 — this is the function that produces
+  every metric quoted in this project.
+
+compare_before_after(single_frame, stacked, n_frames) -> dict:
+  Also covered in Chapter 11.
+
+====== 8.5  astro_stack/postprocess.py ======
+
+Purpose: implement Chapter 6's stretching, and save the final file.
+
+stretch_percentile(image, low_pct=0.25, high_pct=99.75) -> ndarray:
+  Picks low/high percentiles (Chapter 6) as black/white points and
+  linearly rescales between them.
+
+stretch_asinh(image, black_point_pct=1.0, scale=10.0) -> ndarray:
+  The asinh/Lupton stretch (Chapter 6), the default.
+
+stretch_image(image, method="asinh", **kwargs) -> ndarray:
+  Dispatches to whichever stretch was requested, or does a simple min/
+  max rescale for method="none".
+
+save_image(image, output_path, bit_depth=16) -> None:
+  Writes the final image to disk: a 16-bit TIFF (via the tifffile
+  library) if requested, for maximum preserved detail, or an ordinary
+  8-bit image (via imageio) otherwise.
+
+  DEFINITION — bit depth: how many distinct brightness levels a stored
+  pixel value can represent. An 8-bit channel has 256 possible levels
+  (0-255); a 16-bit channel has 65,536 possible levels (0-65535). Higher
+  bit depth preserves finer gradations, which matters more before final
+  display, since a stretch (Chapter 6) can otherwise introduce visible
+  "banding" in smooth gradients if too few levels are available.
+
+====== 8.6  astro_stack/pipeline.py ======
+
+Purpose: call every other module in the correct order.
+
+run_pipeline(input_dir, output_path, ...) -> dict:
+  The single public function the CLI calls. Uses scan_folder and
+  estimate_decoded_bytes (both from loader.py) to estimate a dataset's
+  total decoded size WITHOUT decoding anything yet, compares that
+  estimate against a memory budget (3072 MB by default), and picks
+  either _run_in_memory_pipeline (below) or streaming.run_streaming_
+  pipeline (Chapter 8.7) accordingly.
+
+_run_in_memory_pipeline(...) -> dict:
+  The straightforward implementation: load_folder decodes everything up
+  front, calibrate_lights applies Chapter 4's corrections, align_frames
+  applies Chapter 5's registration, stack_frames applies Chapter 3's
+  combination, compare_before_after computes Chapter 11's metrics,
+  stretch_image and save_image apply Chapter 6 and write the result.
+
+====== 8.7  astro_stack/streaming.py ======
+
+Purpose: the same pipeline as 8.6, restructured to use a small, FIXED
+amount of memory regardless of how large or numerous the input files
+are.
+
+  DEFINITION — RAM (Random-Access Memory): a computer's fast, working
+  memory, where a running program's data normally lives. RAM is limited
+  in size (this project's real test machine had 16 GB) and its contents
+  disappear when the program using it ends.
+
+  DEFINITION — memory-mapped file (mmap / "memmap"): a way of treating a
+  file sitting on disk as if it were directly readable/writable memory,
+  letting a program access just a small piece of a huge file without
+  loading the whole thing into RAM at once. NumPy's memmap feature is
+  what this module builds on.
+
+  DEFINITION — streaming (in the sense used by this project): processing
+  data one small piece at a time, rather than requiring the entire
+  dataset to be present in memory simultaneously.
+
+Why this module exists: the in-memory approach (8.6) decodes EVERY file
+into RAM and keeps all of them there at once. For 80 full-resolution
+DSLR files, decoded to color pixel data, that added up to roughly 17
+gigabytes needed simultaneously — more than the 16 GB machine used for
+real-world testing had available (see Chapter 12). This module solves
+that by decoding one file at a time, immediately writing it to a
+temporary memory-mapped file on disk, and discarding the in-RAM copy.
+Any operation that genuinely needs to see every frame at once (building
+a median-combined master frame, or the final stack) is done in
+horizontal "row bands": read a band of, say, 200 rows from every frame's
+temp file, combine just that band, write it out, move to the next band.
+Peak memory use then depends only on how many rows are processed per
+band, never on the total number of frames or their size.
+
+estimate_chunk_rows(n_frames, width, channels, budget_bytes, safety_factor=4.0) -> int:
+  Computes how many rows fit in one processing band for a given number
+  of frames, image width, and channel count, while staying under a
+  memory budget. The safety_factor leaves headroom for sigma clipping's
+  own internal temporary arrays.
+
+_close_memmap(mm) -> None:
+  A small utility forcing a memory-mapped file's operating-system handle
+  to actually close. This exists because of a real Windows-specific bug
+  found during testing: normal Python garbage collection wasn't reliably
+  fast enough to let a memmap file be deleted immediately after use —
+  the delete would fail with a "file in use" error unless the handle was
+  explicitly closed first. Documented further in Chapter 12.
+
+_write_array_to_disk / _open_memmap:
+  Small helpers for saving an array to a temp memmap file and reopening
+  one for reading.
+
+_combine_chunk / chunked_combine(sources, method, sigma, maxiters, out, chunk_rows):
+  Combines one row-band, or loops over an entire image doing so band by
+  band, using the exact same stack_mean/stack_median/stack_sigma_clip
+  functions from stacking.py — the combination MATH is never duplicated,
+  only the memory management differs from the in-memory version.
+
+_build_master_streaming(paths, label, tmp_dir, budget_bytes) -> ndarray or None:
+  The streaming-mode equivalent of calibration.py's master-building
+  functions: decodes each calibration frame once to a temp file, builds
+  the master via chunked_combine, then deletes the per-frame temp files
+  immediately (rather than letting them pile up for the whole run).
+
+run_streaming_pipeline(paths_by_type, output_path, ...) -> dict:
+  The streaming equivalent of _run_in_memory_pipeline, with the same
+  overall stages, processing one file and one row-band at a time
+  throughout. Uses Python's tempfile.TemporaryDirectory so every
+  temporary file this run creates is automatically cleaned up, even if
+  something fails partway through.
+
+====== 8.8  stack.py ======
+
+Purpose: the CLI itself.
+
+build_parser() -> ArgumentParser:
+  Defines every command-line flag (--input, --output, --stack, --sigma-
+  thresh, --sigma-maxiters, --stretch, --reference, --recursive, --bit-
+  depth, --memory-budget-mb, --verbose), each mapping directly onto a
+  parameter of pipeline.run_pipeline.
+
+  DEFINITION — argparse: Python's standard library module for defining
+  and parsing command-line flags. build_parser() is built entirely with
+  this module.
+
+main(argv=None) -> int:
+  Parses the command line, configures logging (detailed DEBUG-level
+  output if --verbose was passed, otherwise higher-level INFO output),
+  calls run_pipeline inside a try/except block so a failure prints a
+  clean message instead of a raw error traceback, then prints the final
+  human-readable summary: frame count, noise/SNR before and after, which
+  execution mode ran, and where the result was saved.
+
+
+--------------------------------------------------------------------
+CHAPTER 9 — AUTOMATED TESTS
+--------------------------------------------------------------------
+
+  DEFINITION — unit test: a small, automated piece of code that checks
+  one specific behavior of the real code, by feeding it a known input
+  and checking that the output matches a known correct answer. This
+  project uses the pytest testing framework to run all of its tests.
+
+  DEFINITION — synthetic data (as opposed to real data): data generated
+  by code specifically for testing purposes, rather than a real camera
+  capture, precisely so the correct answer is known in advance and can
+  be checked exactly.
+
+test_stacking.py: builds N identical copies of a random synthetic image
+and checks that mean, median, and sigma-clip combining all return that
+same image unchanged (since there's no variation between frames for any
+method to act on).
+
+test_calibration.py: builds a synthetic light frame as (signal + a known
+offset), and dark frames equal to exactly that offset; after calibration
+the result should equal the original signal almost exactly. A second
+test does the same with a synthetic vignetting pattern and flat frames.
+A third confirms calibration is a clean no-op when no calibration frames
+exist.
+
+test_alignment.py: shifts a synthetic star field by a known, exact
+amount, then checks that alignment recovers and undoes that shift. A
+second test does the same with a sharp-edged synthetic "Moon" disk,
+specifically to exercise the phase-correlation fallback path.
+
+test_streaming.py: checks that estimate_chunk_rows respects a memory
+budget, that row-band combining produces the same result as combining
+everything at once, and that the full streaming pipeline agrees closely
+with the full in-memory pipeline on the same synthetic dataset.
+
+test_loader.py: checks filename classification against real examples,
+including the exact underscore-prefix bug and single-letter DSLR naming
+convention found by testing against real data (Chapter 12).
+
+
+====================================================================
+PART III — MEASURING RESULTS
+====================================================================
+
+--------------------------------------------------------------------
+CHAPTER 10 — A SHORT COURSE IN THE STATISTICS THIS PROJECT USES
+--------------------------------------------------------------------
+
+This project leans on a small set of standard statistical tools,
+repeatedly, in several different files. Understanding them here once
+makes every later mention immediately clear.
+
+  DEFINITION — mean: the ordinary average — add up all the values, divide
+  by how many there are.
+
+  DEFINITION — median: the middle value once a set of numbers is sorted
+  (Chapter 4 covers why this project prefers it for combining
+  calibration frames — it ignores one-off outliers completely, where a
+  mean would blend them in).
+
+  DEFINITION — standard deviation: a standard measure of how spread out
+  a set of numbers is around its mean. A small standard deviation means
+  the values cluster tightly together; a large one means they're spread
+  widely. This project uses standard deviation as its direct definition
+  of "noise" (Chapter 11): the more the background pixels' brightness
+  varies randomly from pixel to pixel, the higher the standard
+  deviation, and the noisier the image.
+
+  DEFINITION — percentile: covered in Chapter 6 — the value below which
+  a given percentage of a dataset falls.
+
+  DEFINITION — Gaussian / normal distribution: a specific, extremely
+  common bell-curve-shaped probability distribution. Shot noise and read
+  noise (Chapter 2) both closely approximate a Gaussian distribution in
+  practice, which is part of why the sqrt(N) stacking math in Chapter 3
+  works as well as it does — that math specifically assumes
+  independent, roughly-Gaussian-distributed noise.
+
+  DEFINITION — sigma clipping: already defined in Chapter 8.4 — this
+  project's two uses of it (combining frames, and estimating background
+  statistics in Chapter 11) both rely on the same core idea: iteratively
+  compute a mean/standard deviation, throw out anything too many standard
+  deviations away, and repeat.
+
+
+--------------------------------------------------------------------
+CHAPTER 11 — HOW THIS PROJECT MEASURES NOISE AND SNR
+--------------------------------------------------------------------
+
+The function that produces every metric quoted anywhere in this project
+is stacking.measure_noise_snr(image). Here is exactly what it does, and
+why, step by step.
+
+The problem: measuring "how noisy is the background" and "how strong is
+the signal" would normally require a human to manually pick an empty
+patch of sky and a patch containing the bright target — tedious, and
+impossible to automate directly. Instead, this function estimates both
+automatically, exploiting the fact that in any real astronomical image,
+background sky pixels vastly outnumber bright star/target pixels.
+
+Step 1 — Convert to grayscale.
+  alignment.to_luminance() (Chapter 8.3, using the ITU-R BT.709 weights)
+  collapses a color image to one brightness channel.
+
+Step 2 — Compute sigma-clipped background statistics.
+  astropy's sigma_clipped_stats function (sigma=3.0, maxiters=5, Chapter
+  10) is run on the ENTIRE image. Because bright pixels are a small
+  minority of a typical astronomical image's total pixel count, this
+  iterative process converges on the sky background's true mean, median,
+  and standard deviation, automatically excluding stars and the target
+  without any manual patch-picking.
+    - The MEDIAN becomes "background_median": the typical sky brightness.
+    - The STANDARD DEVIATION becomes "noise_std": this is the literal
+      number meant every time this project says "noise."
+    - A tiny floor (1e-8) prevents a division by zero later.
+
+Step 3 — Estimate signal strength.
+  Rather than the single brightest pixel (which could just be one hot
+  pixel or cosmic ray hit — Chapter 2), the 99.9th PERCENTILE (Chapter
+  6/10) of brightness is used as a robust "peak" estimate. "signal" is
+  then (peak − background_median), floored at zero.
+
+Step 4 — Compute SNR.
+  snr = signal / noise_std — the standard definition from Chapter 2.
+
+The result is a NoiseStats record: background_median, noise_std,
+peak_signal, and snr.
+
+stacking.compare_before_after(single_frame, stacked, n_frames) then:
+  - Runs measure_noise_snr on ONE representative single frame (the
+    reference frame every other frame was aligned to) — the "before"
+    measurement.
+  - Runs measure_noise_snr again on the FINAL stacked image — the
+    "after" measurement.
+  - observed_noise_reduction = before.noise_std / after.noise_std — how
+    many times quieter the background actually got, from real pixel
+    data.
+  - theoretical_noise_reduction_sqrt_n = sqrt(n_frames) — the Chapter 3
+    ideal-case prediction, computed purely from the frame count, with NO
+    dependence on the actual pixel data. This is the benchmark the real
+    measured result gets compared against.
+  - snr_improvement = after.snr / before.snr.
+
+This comparison, printed at the end of every run by stack.py, is what
+lets this project report an actual quantified result instead of just "it
+looks better now."
+
+
+--------------------------------------------------------------------
+CHAPTER 12 — REAL-WORLD CASE STUDY: THE COCOON NEBULA DATASET
+--------------------------------------------------------------------
+
+  DEFINITION — Cocoon Nebula (IC 5146): a real emission and reflection
+  nebula (a cloud of glowing/reflecting interstellar gas and dust) in the
+  constellation Cygnus, used as this project's real-world validation
+  target. "IC 5146" is its catalog designation in the Index Catalogue, a
+  historical astronomical star/nebula catalog.
+
+Every algorithm in this project was first proven correct against
+synthetic data with a known right answer (Chapter 9). The pipeline was
+then run against a real, 80-file Canon DSLR dataset: 25 light frames
+(240 seconds each), 9 dark frames, 23 flat frames, and 23 bias frames —
+all real camera captures.
+
+This surfaced two real bugs that synthetic test data had not caught,
+because synthetic data doesn't reproduce real-world filename conventions
+or real hardware memory limits.
+
+Bug 1 — filename misclassification.
+  The original classifier used a word-boundary regular expression
+  (Chapter 8.1) to detect "bias" in a filename. This silently failed to
+  match "Bias_000.fits," because an underscore counts as a "word
+  character" in regex, so there was no boundary there at all — every
+  calibration frame in the real dataset was quietly being treated as a
+  light frame. Fixed by switching to splitting on non-letter/digit
+  characters and checking for an exact token match. This same real
+  dataset then exposed a SECOND issue: it used a single-leading-letter
+  naming convention (L_/D_/F_/B_, Chapter 8.1) the fixed classifier still
+  didn't recognize. Both are now handled, with regression tests built
+  directly from the real filenames that broke it.
+
+Bug 2 — memory scaling.
+  The in-memory approach (Chapter 8.6) needed roughly 17 gigabytes to
+  hold this 80-frame, full-resolution dataset all at once — more than
+  the 16 GB of RAM on the test machine. The streaming architecture
+  (Chapter 8.7) was built specifically in response to this real failure.
+
+The measured result, after both fixes, on the real 25 usable light
+frames (sigma-clip stacking):
+
+    Background noise:  0.006517 -> 0.003248   (2.01x reduction)
+    Theoretical prediction for N=25:  sqrt(25) = 5.00x
+    Signal-to-noise ratio:  47.34 -> 92.00     (1.94x improvement)
+
+The measured result (about 2x) fell well short of the theoretical ideal
+(5x), for real, explainable reasons — not a measurement error:
+  - Aligning a frame with sub-pixel accuracy requires resampling
+    (interpolating) its pixels onto a new grid, which necessarily blends
+    each pixel a little with its neighbors, correlating noise between
+    adjacent pixels. This breaks the "every pixel's noise is
+    independent" assumption the sqrt(N) formula (Chapter 3) relies on.
+  - The real dark frames were captured across a range of sensor
+    temperatures (roughly 16-20 degrees Celsius, Chapter 2's "dark
+    current" scales with temperature) instead of one fixed temperature,
+    so the dark-current correction wasn't a perfect match for every
+    individual light frame.
+  - The last 5 of the 25 light frames matched noticeably fewer stars
+    during alignment (19-25 matched stars, Chapter 5) than the first 20
+    (47-50 matched stars), suggesting a separate imaging session with
+    slightly different framing or conditions.
+
+This gap between theory and real measurement is itself a useful, honest
+result: it demonstrates the metrics pipeline is measuring something real
+from actual pixel data, not simply reporting the theoretical formula
+back.
+
+
+====================================================================
+PART IV — WRAP-UP AND REFERENCE
+====================================================================
+
+--------------------------------------------------------------------
+CHAPTER 13 — LIMITATIONS AND PLANNED IMPROVEMENTS
+--------------------------------------------------------------------
+
+  DEFINITION — color cast: an unwanted, unintended shift in an image's
+  overall color balance, usually visible as a tint across the whole
+  image rather than in any one object. This project's current output has
+  a visible green color cast — an expected consequence of the Bayer
+  sensor's green-heavy photosite ratio (Chapter 1), which nothing in
+  postprocess.py currently corrects (it only adjusts overall brightness,
+  Chapter 6, not per-channel color balance).
+
+  DEFINITION — white balance / background neutralization: correcting an
+  image's color balance so that something known to be neutral (gray or
+  white in reality) actually reads as neutral in the final image. For a
+  night-sky image, the background sky ITSELF is the natural neutral
+  reference — it should not read as tinted green, red, or blue. The
+  planned fix scales each color channel so their background levels
+  (Chapter 11's background_median, computed per-channel instead of on
+  grayscale) match each other.
+
+  DEFINITION — SCNR (Subtractive Chromatic Noise Reduction): a common
+  astrophotography-specific technique for removing a broad green cast
+  specifically, by clamping each pixel's green channel to no more than
+  the average of its red and blue channels — since real green
+  astronomical signal is rare (most real nebula color is red, blue, or
+  magenta), this targets the sensor-driven cast without damaging real
+  content.
+
+  DEFINITION — photometric color calibration: the more rigorous, later-
+  stage approach of correcting color by comparing measured star colors
+  in the image against a reference catalog of known, true star colors
+  (such as data from the Gaia space telescope mission), rather than just
+  assuming the background should be neutral.
+
+Other known limitations:
+  - No crop-to-common-overlap step: frames registered with slightly
+    different sub-pixel shifts don't all cover exactly the same area,
+    leaving a faint rectangular seam near one edge of the stacked result
+    where fewer frames contributed coverage.
+  - No whole-frame rejection: a badly clouded or trailed light frame
+    would still be included in the stack rather than automatically
+    detected and excluded.
+
+See the README's "Next steps" section for the fuller, prioritized plan.
+
+
+--------------------------------------------------------------------
+CHAPTER 14 — GLOSSARY OF TERMS AND ACRONYMS (ALPHABETICAL)
+--------------------------------------------------------------------
+
+ADU (Analog-to-Digital Unit) — the digital number a sensor outputs for
+  one pixel after converting the analog electron count captured during
+  an exposure. See Chapter 1.
+
+Asterism — a recognizable local pattern/grouping of stars, used loosely
+  the way "constellation" is used informally. See Chapter 5.
+
+Bayer filter / Color Filter Array (CFA) — the grid of tiny red/green/
+  blue filters over a sensor's photosites that lets a single-channel
+  sensor capture color. See Chapter 1.
+
+Bias frame — a zero-length exposure used to measure a sensor's fixed
+  read-noise offset. See Chapter 4.
+
+Bit depth — how many distinct brightness levels a stored pixel value can
+  represent (e.g. 256 for 8-bit, 65,536 for 16-bit). See Chapter 8.5.
+
+CCD / CMOS — the two main camera/telescope sensor technologies. See
+  Chapter 1.
+
+CLI (Command-Line Interface) — running a program via typed commands in a
+  terminal. See Chapter 7.
+
+Color cast — an unwanted overall color tint across an image. See
+  Chapter 13.
+
+CFA — see Bayer filter.
+
+Cosmic ray hit — a stray high-energy particle striking a sensor and
+  producing a spurious bright pixel in one exposure. See Chapter 2.
+
+Dark current (thermal noise) — stray electrons generated by heat within
+  a sensor, independent of real light. See Chapter 2.
+
+Dark frame — an exposure with no light let in, at the same exposure time
+  and temperature as the real photos, used to measure and remove dark
+  current and read noise. See Chapter 4.
+
+Demosaicing (debayering) — converting raw single-color-per-pixel sensor
+  data into a full-color image by interpolation. See Chapter 1.
+
+Dependency — an external software library a project relies on. See
+  Chapter 7.
+
+DSLR (Digital Single-Lens Reflex) — a camera design common in
+  astrophotography. See Chapter 1.
+
+Dust shadow ("dust donut") — a small dim spot in an image caused by dust
+  on or near the sensor. See Chapter 4.
+
+Dynamic range — the ratio between the brightest and faintest
+  meaningfully recorded signal. See Chapter 2.
+
+Exposure time (integration time) — how long a sensor is exposed to
+  light during one shot. See Chapter 1.
+
+Feature matching / RANSAC / ORB / SIFT — a general computer-vision
+  technique for matching distinctive visual features between images;
+  considered but not used for star-field alignment in this project. See
+  Chapter 5.
+
+Field rotation — a slow apparent rotation of the sky relative to the
+  camera frame over a session, seen with certain mount types. See
+  Chapter 5.
+
+FFT (Fast Fourier Transform) — an efficient algorithm for decomposing a
+  signal or image into frequency components; the basis of phase-
+  correlation alignment. See Chapter 5.
+
+FITS (Flexible Image Transport System) — the standard astronomical image
+  file format. See Chapter 8.1.
+
+Flat frame (flat field) — a photo of a uniformly lit target used to
+  measure and correct vignetting and dust shadows. See Chapter 4.
+
+Gaussian / normal distribution — a common bell-curve probability
+  distribution that shot noise and read noise approximate. See
+  Chapter 10.
+
+Gamma correction — a standard non-linear brightness remapping used in
+  ordinary photography, deliberately disabled in this project to keep
+  data linear. See Chapter 6.
+
+Hot pixel / dead pixel — an individual defective photosite that always
+  reads too bright or too dark/unresponsive. See Chapter 2.
+
+Histogram — a chart of how many pixels have each brightness value. See
+  Chapter 6.
+
+HDU (Header Data Unit) — one metadata-plus-data block within a FITS
+  file. See Chapter 8.1.
+
+Image calibration — the general process of using dark/bias/flat frames
+  to remove known camera/optics defects from a light frame. See
+  Chapter 4.
+
+Integration — a synonym for stacking; also used to mean exposure time.
+  See Chapter 3.
+
+ISO — a camera sensitivity setting that amplifies signal (and noise)
+  electronically. See Chapter 1.
+
+ITU-R BT.709 — the international standard defining the red/green/blue
+  weights used to compute image luminance (brightness). See Chapter 8.3.
+
+LibRaw / rawpy — the underlying decoding library (LibRaw) and its Python
+  interface (rawpy) used to read camera RAW files. See Chapter 8.1.
+
+Light frame (sub-exposure, "a sub") — one individual real photo of the
+  actual target. See Chapter 3.
+
+Linear data — image data where pixel value is directly proportional to
+  the amount of light captured. See Chapter 6.
+
+Master frame (master dark/flat/bias) — a single combined frame built
+  from many individual calibration frames of the same type. See
+  Chapter 4.
+
+Mean — the ordinary numeric average. See Chapter 10.
+
+Median — the middle value of a sorted set of numbers. See Chapter 4 and
+  Chapter 10.
+
+Memory-mapped file (mmap/memmap) — treating a file on disk as directly
+  accessible memory, without loading the whole file into RAM. See
+  Chapter 8.7.
+
+ndarray — NumPy's core N-dimensional array data structure, used
+  throughout this project to store image pixel data. See Chapter 8.2.
+
+Noise — any variation in a recorded pixel value that doesn't come from
+  real light. See Chapter 2.
+
+Percentile — the value below which a given percentage of a dataset
+  falls. See Chapter 6 and Chapter 10.
+
+Phase correlation — an FFT-based technique for computing the shift
+  between two images without needing to detect individual points. See
+  Chapter 5.
+
+Photometric color calibration — correcting image color by comparing
+  measured star colors against a reference catalog. See Chapter 13.
+
+Photosite — one individual light-sensitive element of a camera sensor,
+  corresponding to one pixel. See Chapter 1.
+
+Python dataclass — a Python class whose main purpose is to bundle
+  related data fields together. See Chapter 8.1.
+
+Python package — a folder with an __init__.py file, treated by Python as
+  one importable unit. See Chapter 7.
+
+RAM (Random-Access Memory) — a computer's fast working memory. See
+  Chapter 8.7.
+
+RANSAC (RANdom SAmple Consensus) — an algorithm for finding a best-fit
+  geometric transform while ignoring bad/outlier matches. See Chapter 5.
+
+RAW (camera format) — a file of minimally processed, un-demosaiced
+  sensor data plus metadata. See Chapter 1.
+
+Read noise — noise added by a sensor's own electronics during readout,
+  independent of light captured. See Chapter 2.
+
+Registration (alignment) — mathematically shifting/rotating frames so
+  the same real object lands on the same pixel across all of them. See
+  Chapter 5.
+
+Regular expression (regex) / word boundary — a text pattern-matching
+  mini-language, and a specific position within it marking a transition
+  between "word" and "non-word" characters. See Chapter 8.1.
+
+RGGB — the specific, most common Bayer filter layout (one red, two
+  green, one blue per 2x2 photosite block). See Chapter 1.
+
+SCNR (Subtractive Chromatic Noise Reduction) — a technique for removing
+  a broad green color cast. See Chapter 13.
+
+Shot noise (photon noise) — random variation from the fundamentally
+  discrete, randomly-timed arrival of individual photons. See Chapter 2.
+
+Sigma clipping — an iterative statistical technique for automatically
+  identifying and discarding outliers. See Chapter 8.4 and Chapter 10.
+
+Signal-to-Noise Ratio (SNR) — signal strength divided by noise level; a
+  measure of how clearly real content stands out from randomness. See
+  Chapter 2 and Chapter 11.
+
+Stacking (integration) — combining many light frames into one image to
+  reduce noise. See Chapter 3.
+
+Standard deviation — a measure of how spread out a set of numbers is
+  around its mean; this project's literal definition of "noise." See
+  Chapter 10.
+
+Streaming (in this project's sense) — processing data one small piece
+  at a time rather than needing it all in memory simultaneously. See
+  Chapter 8.7.
+
+Stretching — a deliberate non-linear remapping of pixel brightness to
+  make faint detail visible on a display. See Chapter 6.
+
+Synthetic data — data generated by code for testing, with a known
+  correct answer, as opposed to a real camera capture. See Chapter 9.
+
+Unit test — an automated check of one specific piece of code behavior
+  against a known correct answer. See Chapter 9.
+
+Vignetting — natural dimming toward the edges/corners of an image caused
+  by lens/telescope geometry. See Chapter 4.
+
+White balance — see background neutralization, Chapter 13.

@@ -1,0 +1,392 @@
+ASTROPHOTOGRAPHY STACKING PIPELINE
+A narrative introduction
+====================================================================
+
+INTRODUCTION
+
+Point a camera at the night sky and take one photo, and you will
+usually be disappointed. Faint objects like nebulae are so dim that a
+single exposure mostly shows noise, not detail. The entire practice of
+astrophotography image processing exists to solve one problem: how do
+you pull a faint, real signal out of a noisy photo, using nothing but
+math?
+
+This document walks through that problem, the standard solution the
+astrophotography field has settled on, and exactly how this project
+implements that solution in code. It reads front to back like a short
+textbook. Every term is explained in plain language the first time it
+comes up, right there in the sentence, so you never need to stop and
+look something up elsewhere.
+
+
+--------------------------------------------------------------------
+CHAPTER 1 — THE PROBLEM: NOISE IN THE DARK
+--------------------------------------------------------------------
+
+A camera sensor is a grid of millions of tiny light-collecting cells,
+one per pixel. During an exposure, each cell counts roughly how many
+particles of light (photons) landed on it, and that count becomes the
+pixel's brightness value. If that were the whole story, a longer or more
+sensitive exposure would always reveal fainter detail cleanly. It isn't
+the whole story, because three sources of randomness get mixed into
+every pixel's count along the way:
+
+Shot noise is randomness in the light itself. Photons don't arrive at a
+perfectly steady rate; they arrive at random moments, so even two pixels
+receiving the exact same true amount of light will end up with slightly
+different counts, purely by chance. This isn't a flaw in any particular
+camera, it's a basic property of light.
+
+Read noise is randomness added by the camera's own electronics every
+time it measures a pixel and converts that measurement into a stored
+number. It's there even in a zero-length exposure.
+
+Dark current (also called thermal noise) is heat inside the sensor
+knocking loose stray electrons even when no real light is hitting it at
+all. It gets worse the longer the exposure and the warmer the sensor.
+
+Put together, these three sources mean every pixel's brightness value is
+really "the true signal, plus some amount of random error." The
+relationship between the two is usually described with a single number:
+signal-to-noise ratio, or SNR, which is exactly what it sounds like — the
+strength of the real signal divided by the size of the random noise
+around it. A high SNR means the real content clearly stands out; a low
+SNR means it's buried in randomness, hard to tell apart from noise at
+all. A single quick photo of a faint nebula typically has a low SNR.
+Getting a usable image means finding a way to raise that number.
+
+
+--------------------------------------------------------------------
+CHAPTER 2 — THE SOLUTION: STACK MANY, TRUST THE AVERAGE
+--------------------------------------------------------------------
+
+The key insight the whole field relies on: if you take many separate
+exposures of the same fixed target, the real signal shows up in the same
+place in every exposure, but the noise is random and different each
+time. That difference is exploitable.
+
+Here's the reasoning in full. Average N exposures together. The real
+signal in a given pixel is the same value in every exposure, so it just
+adds up directly — N times as much signal as one exposure has, on
+average. The noise, though, is random and independent from exposure to
+exposure. Independent random quantities don't add up the same way when
+averaged; a basic result from probability says they add "in quadrature,"
+meaning the combined noise only grows by the square root of N, not by N
+itself. Since SNR is signal divided by noise, and signal grew by N while
+noise only grew by the square root of N, the ratio improves by N divided
+by the square root of N, which simplifies to just the square root of N.
+
+That's the single most important formula behind this entire project:
+combining N independent exposures should improve SNR by roughly the
+square root of N. Combine 4 photos, expect about 2 times cleaner.
+Combine 25, expect about 5 times cleaner, in the ideal case. This
+process of combining many exposures into one is called stacking, or
+sometimes integration. Each individual input exposure is called a light
+frame — "light" because it's a real, direct photo of the actual target,
+as opposed to the calibration exposures described next.
+
+Two problems stand between "many photos" and "a clean stacked result,"
+and they have to be solved before the averaging above can actually work:
+
+The first problem is that a camera and its optics have fixed, repeating
+defects that stacking alone cannot fix — averaging the same defect into
+every frame just leaves that defect sitting in the average, unchanged.
+The fix is to deliberately photograph the defects themselves, using
+special calibration exposures, and remove them mathematically before
+combining the light frames. A dark frame is a shot taken with the lens
+capped, at the exact same exposure length as the light frames, so no
+real light gets in and whatever shows up is purely the sensor's own read
+noise and dark current — that pattern can then be subtracted straight out
+of every light frame. A bias frame is the shortest possible exposure the
+camera can take, still capped, isolating just the electronic offset with
+none of the dark-current buildup a longer dark would include; it's used
+to clean up the next kind of frame, or as a rough stand-in when no
+properly matched dark exists. A flat frame is a photo of something evenly
+lit — twilight sky, or a dedicated light panel — through the same optics
+as the real shots; since the true light hitting it really is uniform, any
+variation that still shows up must be an optical flaw, most commonly
+vignetting (natural dimming toward the corners of an image) or a dust
+shadow (a small dim spot from a speck of dust near the sensor). Because a
+flat's defect scales brightness down rather than adding to it, it gets
+divided out rather than subtracted. To avoid injecting a fresh dose of
+randomness from the calibration shots themselves, many dark frames (or
+flats, or biases) are first combined into a single master frame using
+the median (the middle value once a set of numbers is sorted) rather than
+a plain average, since a median completely ignores a one-off fluke — like
+a single stray high-energy particle striking the sensor, called a cosmic
+ray hit — that an average would blend in.
+
+The second problem is that a given star does not land on the exact same
+pixel in every exposure. Tracking motors aren't perfectly accurate,
+handheld shots move between frames, and some mount types introduce a
+slow field rotation — an apparent rotation of the whole sky relative to
+the frame — even while otherwise tracking correctly. Before frames can be
+averaged pixel-by-pixel, they have to first be shifted (and sometimes
+rotated) so the same star lands on the same pixel everywhere. This step
+is called registration, or alignment.
+
+Once frames are calibrated and aligned, they can finally be combined —
+and even the combining step has more than one reasonable way to do it,
+covered in the next chapter alongside the actual code.
+
+There's one more step after combining, worth mentioning here because it
+shapes a lot of design decisions later: a freshly stacked astronomical
+image has an enormous range between its faintest and brightest real
+content, and displaying that range directly on a screen produces a
+nearly all-black image with a few bright dots — almost everything
+interesting is crushed into indistinguishable dark pixels. A final
+brightening step, called stretching, remaps intensity so the faint stuff
+becomes visible without the bright stuff turning into a featureless white
+blob.
+
+
+--------------------------------------------------------------------
+CHAPTER 3 — INSIDE THE PIPELINE: HOW THE CODE IMPLEMENTS THIS
+--------------------------------------------------------------------
+
+This project is organized so that each stage from Chapter 2 lives in its
+own file, inside a Python package (a folder of code files that can be
+imported as one unit) called astro_stack/. The overall flow, from a
+folder of photos to a finished picture, is:
+
+    load files -> calibrate (optional) -> align -> stack -> stretch and save
+
+A command-line program, stack.py, is the thing you actually run. It
+reads flags like --input, --output, and --stack from the terminal, and
+calls one function, pipeline.run_pipeline(), which carries out every
+stage above in order and returns a summary of what happened. Everything
+in this chapter is really describing what happens inside that one
+function call.
+
+Loading and sorting (astro_stack/loader.py).
+Every file in the input folder first has to become plain pixel data the
+rest of the program can work with. This module knows how to decode three
+families of file: FITS (the standard astronomy image format, storing
+pixel data alongside observation metadata), camera RAW files (a camera's
+minimally processed sensor data, before it's been turned into an
+ordinary color photo — .cr2 for Canon, .nef for Nikon, .dng generically),
+and ordinary formats like JPEG, PNG, and TIFF. A small data container
+called Frame bundles one decoded image together with its file path,
+exposure time, and which of the four frame types (light, dark, flat,
+bias) it is. The function classify_filename() figures out that frame type
+purely from the filename — an explicit word like "Dark" or a single
+leading letter like "D_" is recognized, and anything unlabeled defaults
+to a light frame, since an unlabeled photo is almost always meant to be a
+real picture of the sky. load_frame() picks the correct decoder for one
+file and classifies it; load_folder() does this for an entire directory
+and returns four separate lists, one per frame type.
+
+One detail worth calling out here: when this module decodes a camera RAW
+file, it deliberately turns off two things a normal camera app would
+apply automatically — gamma correction (a standard brightness curve
+matched to human perception) and auto-brightness. Skipping both keeps
+pixel values directly proportional to the light that was actually
+captured, which is called linear data. That matters because the
+calibration math in the next stage only works correctly on linear data;
+a gamma-corrected image cannot be validly dark-subtracted or flat-
+divided.
+
+Calibration (astro_stack/calibration.py).
+This module implements Chapter 2's calibration math directly:
+
+    calibrated = (light − master_dark) / normalized_master_flat
+
+build_master_dark(), build_master_bias(), and build_master_flat() each
+median-combine a list of calibration frames of one type into a single
+master frame, exactly as described above. calibrate_light() applies the
+formula to one light frame, and calibrate_lights() is the entry point the
+rest of the program calls: it checks whether any dark, flat, or bias
+frames were found at all, and if none exist, it logs that calibration is
+being skipped and passes the light frames through completely untouched.
+This one check is what lets the exact same code handle a folder of phone
+photos with no calibration set at all, and a full astrophotography
+session with a proper calibration library, without needing separate code
+paths for each case.
+
+Alignment (astro_stack/alignment.py).
+This module implements the registration step. Two different techniques
+are used, and the code picks between them automatically for each frame.
+The first, and the one tried first, is a library called astroalign,
+which finds star-like points in an image, groups them into triangles
+three at a time, and matches triangles between two images by their
+shape — the ratio between a triangle's side lengths doesn't change even
+if the whole image is rotated or shifted, so matching shapes reliably
+identifies which star is which between frames. From enough matched
+points, it solves directly for the exact rotation and shift needed to
+line the images up, which correctly handles field rotation. Its
+limitation is that it needs a reasonable number of clearly visible stars
+to build triangles from in the first place — it has nothing to work with
+on a nearly starless frame. For that case, the code falls back
+automatically to phase correlation, a technique based on the Fast
+Fourier Transform (a standard, efficient algorithm for analyzing a
+signal in terms of its underlying frequency components). Phase
+correlation computes how far one image has shifted relative to another
+directly from their frequency-domain data, without needing to find any
+individual stars at all — it works even with just one or two points, or
+a single bright object like the Moon, as long as there's some sharp edge
+to lock onto. Its own limitation is that it only recovers a straight-
+line shift, not a rotation. align_frames() is the function that ties
+this together: it picks one frame as a fixed reference, then aligns
+every other frame to it, trying astroalign first and falling back to
+phase correlation only when astroalign can't find enough stars.
+
+Stacking (astro_stack/stacking.py).
+This module implements the actual combining step, with three selectable
+methods. A plain mean (the ordinary average) gets the full theoretical
+square-root-of-N noise improvement from Chapter 2, but has no way to
+notice a bad pixel — a passing satellite trail in even one frame still
+gets blended into the result. A median (the middle value at each pixel,
+across all frames) completely ignores a minority of bad frames at any
+given pixel, at some cost in overall noise reduction efficiency compared
+to the mean. The default method, sigma-clipped mean, tries to get the
+best of both: at every pixel, it computes the average and the spread of
+values across all frames (this "computing the spread and throwing out
+what's too far from average, then repeating" process is called sigma
+clipping), discards anything unusually far from the local average, and
+only then takes the mean of what's left. This rejects the same kind of
+outliers a median would, while keeping noise performance close to the
+plain mean, because it only throws away the genuinely bad values instead
+of collapsing everything toward a middle point. This module also
+contains the functions that measure how well any of this actually
+worked — covered fully in the next chapter, since that's where results
+come from.
+
+Post-processing (astro_stack/postprocess.py).
+This module implements the stretching step from the end of Chapter 2.
+The default method is an asinh stretch, named for the mathematical
+function it uses (the inverse hyperbolic sine). That function behaves
+almost like a straight line for small values and bends into a
+logarithmic curve for large ones — which is exactly the shape needed
+here: faint, near-background signal gets stretched close to
+proportionally, so noise isn't exaggerated, while bright signal like
+star cores gets compressed instead of clipping abruptly to solid white.
+This same idea, under the name "Lupton stretch," is what produces the
+well-known public color images from large sky surveys. save_image()
+then writes the final result to disk, as a 16-bit file if maximum detail
+was requested, or an ordinary 8-bit image otherwise.
+
+Tying it together, and scaling up (astro_stack/pipeline.py and
+astro_stack/streaming.py).
+pipeline.py's run_pipeline() function calls every module above in the
+right order. It also makes one decision before doing any real work: it
+estimates how much memory the whole dataset would need if every file
+were decoded and held at once, without actually decoding anything yet,
+just by reading file headers and dimensions. If that estimate is small,
+it runs the straightforward version described so far, which loads
+everything into a computer's fast working memory (RAM) up front. If the
+estimate is large — large enough that it might not fit in the machine's
+available memory at all — it instead switches to the logic in
+streaming.py, which processes one file at a time, and even one thin
+horizontal slice of an image at a time, writing intermediate results to
+temporary files on disk instead of keeping everything in memory
+simultaneously. This second path does exactly the same calibration,
+alignment, and stacking math as the first, just organized so it never
+needs more than a small, fixed amount of memory, regardless of how many
+files or how large they are.
+
+
+--------------------------------------------------------------------
+CHAPTER 4 — PROVING IT WORKS: TESTS AND METRICS
+--------------------------------------------------------------------
+
+Before any of the code above was trusted, each piece was checked against
+synthetic data — data generated by the test code itself specifically so
+the correct answer is already known. Stacking N identical copies of the
+same fake image should return that exact image back unchanged, no matter
+which of the three methods is used. Subtracting a fake dark frame with a
+known fixed offset from a fake light frame with that same offset added
+in should leave just the original signal behind, almost exactly.
+Shifting a fake star field by a known, exact number of pixels and then
+running it through alignment should recover and undo that precise shift.
+Every one of these checks passed before the pipeline was ever pointed at
+a real photo.
+
+Passing synthetic tests isn't the same as working on real cameras,
+though — real data has quirks synthetic data doesn't reproduce, which is
+exactly what happened when this pipeline was run against an actual 80-
+file DSLR (a standard interchangeable-lens camera) dataset. That real
+test, and what it found, is the subject of the next chapter.
+
+Measuring results, not just producing a picture, matters just as much as
+the processing itself. The function that does this, measure_noise_snr(),
+avoids needing a person to manually pick "an empty patch of sky" and "a
+patch with the target" by relying on a simple fact: in almost any real
+astronomical photo, background sky pixels vastly outnumber bright star or
+target pixels. It converts an image to a single brightness channel, then
+runs an iterative sigma-clipping pass (the same "throw out what's too far
+from average, then repeat" idea from Chapter 3) over the ENTIRE image.
+Because bright content is such a small minority of the total pixels,
+this process converges on the sky background's typical brightness and
+its natural spread automatically, with the stars and target effectively
+excluded on their own. That measured spread becomes the number this
+project calls "noise." The 99.9th percentile of brightness (a value
+chosen so it can't be thrown off by one single stray bright pixel) stands
+in for "how strong is the signal," and dividing that by the noise gives
+the SNR defined all the way back in Chapter 1. Running this once on a
+single raw frame and once on the final stacked result, and comparing the
+two, is what produces every noise and SNR number this project reports —
+alongside the theoretical square-root-of-N prediction from Chapter 2,
+computed independently from the frame count alone, as the benchmark the
+real measurement gets checked against.
+
+
+--------------------------------------------------------------------
+CHAPTER 5 — RESULTS: THE COCOON NEBULA
+--------------------------------------------------------------------
+
+The real-world test used a genuine 80-file Canon DSLR dataset of the
+Cocoon Nebula (a glowing cloud of interstellar gas and dust, cataloged as
+IC 5146): 25 light frames at 240 seconds each, plus 9 dark, 23 flat, and
+23 bias calibration frames — all real camera captures, not synthetic
+test data.
+
+This immediately surfaced two real problems synthetic testing had
+missed. First, the filename classifier from Chapter 3 was silently
+misreading every single calibration frame as a light frame, because a
+subtle quirk of how the original pattern-matching code worked meant it
+never actually recognized "Bias" as a whole word inside a filename like
+"Bias_000.fits." Once fixed, the same real dataset immediately exposed a
+second, related gap: it used a different, single-leading-letter naming
+convention the fix hadn't accounted for. Both are corrected now, with
+tests built directly from the real filenames that broke them. Second,
+loading all 80 full-resolution files into memory at once turned out to
+need roughly 17 gigabytes, more than the 16-gigabyte machine running the
+test had available — which is exactly the real-world problem the
+streaming approach from Chapter 3 was built to solve.
+
+With both fixed, the full dataset's 25 usable light frames ran start to
+finish through sigma-clipped stacking, with this measured result:
+
+    Background noise:    0.006517  ->  0.003248   (2.01x reduction)
+    Theoretical target for 25 frames: square root of 25 = 5.00x
+    Signal-to-noise ratio:  47.34   ->  92.00      (1.94x improvement)
+
+The real improvement, about 2 times, fell noticeably short of the ideal
+5 times predicted by the pure math in Chapter 2 — and there are real,
+identifiable reasons why, rather than the measurement simply being
+wrong. Aligning a frame with sub-pixel precision requires blending
+neighboring pixels together slightly (a process called resampling or
+interpolation), which correlates noise between adjacent pixels in a way
+the ideal formula assumes doesn't happen. The real dark frames in this
+dataset were shot across a range of sensor temperatures rather than one
+single fixed temperature, and since dark current depends on temperature,
+that correction wasn't a perfect match for every light frame. And the
+last five of the twenty-five light frames matched noticeably fewer stars
+during alignment than the rest, suggesting they may have come from a
+slightly different imaging session. None of that is a flaw in the
+measurement — if anything, a real result landing short of an idealized
+theoretical prediction, for identifiable physical reasons, is exactly
+what you'd expect from a pipeline measuring genuine pixel data instead of
+just reporting a formula back.
+
+
+CLOSING NOTE
+
+What's deliberately not in this project yet: correcting the image's
+overall color balance (the current result has a visible green tint, an
+expected side effect of how camera color sensors are built, not
+something addressed by the brightness-only stretching in Chapter 3), and
+cropping away a faint seam near one edge of the stacked image where
+frames didn't perfectly overlap after alignment. Both are understood,
+explainable gaps rather than surprises, and both are documented as
+planned next steps.
