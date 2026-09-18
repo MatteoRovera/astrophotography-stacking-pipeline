@@ -142,6 +142,7 @@ def run_streaming_pipeline(
     bit_depth: int = 16,
     memory_budget_mb: float = DEFAULT_MEMORY_BUDGET_MB,
 ) -> dict:
+    """run pipeline with frames processed one at a time via memory-mapped files on disk."""
     from .postprocess import save_image, stretch_image  # local import: avoid cycle at module load
 
     output_path = Path(output_path)
