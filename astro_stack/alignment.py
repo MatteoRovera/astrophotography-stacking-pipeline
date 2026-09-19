@@ -37,6 +37,7 @@ def to_luminance(data: np.ndarray) -> np.ndarray:
 
 
 def _warp_with_transform(data: np.ndarray, transform, output_shape: tuple) -> np.ndarray:
+    """apply an affine transform to an image, handling mono or color."""
     from skimage.transform import warp
 
     kwargs = dict(order=3, mode="constant", cval=0.0, preserve_range=True)
